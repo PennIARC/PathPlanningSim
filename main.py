@@ -1,3 +1,5 @@
+import time
+
 import pygame
 
 from Sim import Simulation
@@ -6,88 +8,110 @@ from fontDict import fonts
 
 # ---------------- Configuration
 FPS = 60
-SCALE_DOWN_FACTOR = 2  # draw at 1/2 resolution and scale up, as in GridTesting
-PADDING = 20           # px (in scaled-down space) kept clear around each grid
-TILE_GAP = 1           # px between cells, which is what makes the grid visible
-UNSEEN_OPACITY = 0.3   # live map: how strongly a cell's colour shows before any drone has seen it
+SCALE_DOWN_FACTOR = 2   # draw at 1/2 resolution and scale up, as in GridTesting
+PADDING = 20            # px (in scaled-down space) kept clear around each grid
+TITLE_H = 16            # px above each grid for its title
+BAR_H = 36              # px at the bottom for the buttons
+TILE_GAP = 1            # px between cells, which is what makes the grid visible
+STEPS_PER_SECOND = 10   # auto-step speed while playing
+ALLOCATION_OPACITY = 0.45  # middle grid: how strongly a drone's colour tints its cells
 
 
 class Endesga:
     black = [19, 19, 19]
     white = [255, 255, 255]
+    greyL = [200, 200, 200]
     my_blue = [32, 36, 46]
     darker_my_blue = [16, 18, 21]
     grey_blue = [66, 76, 110]
     debug_red = [255, 96, 141]
 
 
-OBSTACLE_COLOR = [0, 0, 0]
-UNALLOCATED_COLOR = Endesga.grey_blue
+UNSEEN_COLOR = Endesga.my_blue
+SEEN_COLOR = [56, 63, 82]         # slightly lighter than UNSEEN_COLOR
+OBSTACLE_COLOR = [150, 90, 220]   # purple
 
 
-def world_cell_color(cell):
-    """Top grid (the real map): colouring unchanged for now."""
-    return Endesga.my_blue
+def blend(base, over, opacity):
+    return [int(base[i] + (over[i] - base[i]) * opacity) for i in range(3)]
 
 
-def make_live_cell_color(drones):
-    """Bottom grid (the live map): colour = allocated drone, opacity = seen, black = known obstacle."""
-    background = Endesga.darker_my_blue
-
-    def live_cell_color(cell):
-        if cell.isObstacle:
-            return OBSTACLE_COLOR
-        base = UNALLOCATED_COLOR if cell.droneAllocationIndex is None else drones[cell.droneAllocationIndex].color
-        opacity = 1.0 if cell.searched else UNSEEN_OPACITY
-        return [int(background[i] + (base[i] - background[i]) * opacity) for i in range(3)]
-
-    return live_cell_color
+# ---------------- Cell colours, one function per grid
+def drone_view_color(sim, x, y):
+    """Left grid: lighter where a drone has seen the cell, purple for obstacles the drones have found."""
+    cell = sim.liveMap.cells[y][x]
+    if cell.isObstacle:
+        return OBSTACLE_COLOR
+    return SEEN_COLOR if cell.searched else UNSEEN_COLOR
 
 
-def compute_tile_size(region_size, grid):
-    """Largest whole-pixel cell size that fits the grid inside a region."""
-    avail_w = region_size[0] - PADDING * 2
-    avail_h = region_size[1] - PADDING * 2
-    return int(max(2, min(avail_w / grid.width, avail_h / grid.height)))
+def allocation_color(sim, x, y):
+    """Middle grid: each cell tinted with the colour of the drone it is assigned to."""
+    index = sim.liveMap.cells[y][x].droneAllocationIndex
+    if index is None:
+        return UNSEEN_COLOR
+    return blend(UNSEEN_COLOR, sim.drones[index].color, ALLOCATION_OPACITY)
 
 
-def layout_grids(surface_size, grids):
-    """Splits the surface into equal-height bands, one per grid, top to bottom.
+def omnipotent_color(sim, x, y):
+    """Right grid: every obstacle on the real map, whether or not a drone has seen it."""
+    return OBSTACLE_COLOR if sim.world.cells[y][x].isObstacle else UNSEEN_COLOR
 
-    Returns the shared tile size and the top-left draw position of each grid,
-    centred inside its band.
+
+VIEWS = [
+    ("Drone view", drone_view_color),
+    ("Allocation", allocation_color),
+    ("Omnipotent", omnipotent_color),
+]
+
+
+def layout_grids(surface_size, grid_w, grid_h, count):
+    """Splits the surface into equal-width columns, one per grid, left to right.
+
+    Returns the shared tile size and the top-left position of each grid,
+    leaving room for titles above and the button bar below.
     """
-    band_h = surface_size[1] // len(grids)
-    tile_size = min(compute_tile_size((surface_size[0], band_h), g) for g in grids)
-    positions = []
-    for i, g in enumerate(grids):
-        w, h = g.width * tile_size, g.height * tile_size
-        positions.append(((surface_size[0] - w) // 2, i * band_h + (band_h - h) // 2))
-    return tile_size, positions
+    column_w = surface_size[0] // count
+    avail_w = column_w - PADDING * 2
+    avail_h = surface_size[1] - PADDING * 2 - TITLE_H - BAR_H
+    tile_size = int(max(2, min(avail_w / grid_w, avail_h / grid_h)))
+    w, h = grid_w * tile_size, grid_h * tile_size
+    top = PADDING + TITLE_H + (avail_h - h) // 2
+    return tile_size, [(i * column_w + (column_w - w) // 2, top) for i in range(count)]
 
 
-class GridView:
-    """Cached drawing of one Grid. Cells are only redrawn when the grid flags them dirty."""
+def draw_scene(surface, sim, tile_size, positions, font):
+    """Draws all three grids, plus trails and drones on the left one."""
+    surface.fill(Endesga.darker_my_blue)
+    fill = tile_size - TILE_GAP
+    width, height = sim.world.width, sim.world.height
+    for (title, color_fn), (ox, oy) in zip(VIEWS, positions):
+        drawText(surface, Endesga.greyL, font, ox + width * tile_size / 2, oy - TITLE_H, title, justify="center")
+        for y in range(height):
+            for x in range(width):
+                pygame.draw.rect(surface, color_fn(sim, x, y), (ox + x * tile_size, oy + y * tile_size, fill, fill))
 
-    def __init__(self, grid, tile_size, pos, color_fn):
-        self.grid = grid
-        self.tile_size = tile_size
-        self.pos = pos
-        self.color_fn = color_fn
-        self.surface = pygame.Surface((grid.width * tile_size, grid.height * tile_size))
-        self.surface.fill(Endesga.darker_my_blue)  # shows through as the gap between cells
-        grid.mark_all_dirty()
+    # Trails and drones sit on the cell centres, which are offset by the gap
+    origin = (positions[0][0] - TILE_GAP / 2, positions[0][1] - TILE_GAP / 2)
+    for drone in sim.drones:
+        drone.draw_trail(surface, origin, tile_size)
+    for drone in sim.drones:
+        drone.draw(surface, origin, tile_size)
 
-    def refresh(self):
-        """Redraws dirty cells onto the cached surface. Returns True if anything changed."""
-        if not self.grid.dirty:
-            return False
-        t = self.tile_size
-        fill = t - TILE_GAP
-        for x, y in self.grid.dirty:
-            pygame.draw.rect(self.surface, self.color_fn(self.grid.cells[y][x]), (x * t, y * t, fill, fill))
-        self.grid.dirty.clear()
-        return True
+
+class Button:
+    def __init__(self, rect, label):
+        self.rect = pygame.Rect(rect)
+        self.label = label
+
+    def hit(self, pos):
+        return self.rect.collidepoint(pos)
+
+    def draw(self, surface, font, mouse_pos):
+        hovered = self.hit(mouse_pos)
+        pygame.draw.rect(surface, Endesga.grey_blue if hovered else Endesga.my_blue, self.rect, 0, 3)
+        pygame.draw.rect(surface, Endesga.grey_blue, self.rect, 1, 3)
+        drawText(surface, Endesga.white, font, self.rect.centerx, self.rect.centery - font.get_height() / 2, self.label, justify="center")
 
 
 def main():
@@ -98,27 +122,33 @@ def main():
     screen_width = int(screen.get_width() / SCALE_DOWN_FACTOR)
     screen_height = int(screen.get_height() / SCALE_DOWN_FACTOR)
     screen2 = pygame.Surface((screen_width, screen_height)).convert()
-    screen2_scaled = pygame.Surface(screen.get_size()).convert()  # full-size copy, rebuilt only when a grid changes
+    screen2_scaled = pygame.Surface(screen.get_size()).convert()  # full-size copy, rebuilt only when the sim changes
     screenUI = pygame.Surface((screen_width, screen_height)).convert_alpha()
     font_regular = fonts[f"regular{int(25 / (SCALE_DOWN_FACTOR ** (1 / 1.5)))}"]
+    font_small = fonts[f"regular{int(18 / (SCALE_DOWN_FACTOR ** (1 / 1.5)))}"]
 
     sim = Simulation()
-    world, liveMap, drones = sim.world, sim.liveMap, sim.drones  # world is drawn on top, liveMap below it
+    tile_size, positions = layout_grids((screen_width, screen_height), sim.world.width, sim.world.height, len(VIEWS))
 
-    tile_size, (world_pos, live_pos) = layout_grids((screen_width, screen_height), [world, liveMap])
-    views = [
-        GridView(world, tile_size, world_pos, world_cell_color),
-        GridView(liveMap, tile_size, live_pos, make_live_cell_color(drones)),
-    ]
-    # Drones are drawn straight onto the full-size screen, so convert the grid's place and cell size to real pixels
-    world_origin_px = (world_pos[0] * SCALE_DOWN_FACTOR, world_pos[1] * SCALE_DOWN_FACTOR)
-    tile_size_px = tile_size * SCALE_DOWN_FACTOR
+    button_w, button_h, button_gap = 56, 20, 8
+    button_y = screen_height - BAR_H + (BAR_H - button_h) // 2 - 4
+    button_x = screen_width // 2 - (button_w * 3 + button_gap * 2) // 2
+    play_button = Button((button_x, button_y, button_w, button_h), "Play")
+    step_button = Button((button_x + button_w + button_gap, button_y, button_w, button_h), "Step")
+    reset_button = Button((button_x + (button_w + button_gap) * 2, button_y, button_w, button_h), "Reset")
 
     pygame.mouse.set_visible(False)
-    toggle = True
+    playing = False
+    step_timer = 0.0
+    drawn_version = None
+    last_time = time.time()
 
     running = True
     while running:
+        now = time.time()
+        dt = now - last_time
+        last_time = now
+
         mx, my = pygame.mouse.get_pos()
         mx, my = mx / SCALE_DOWN_FACTOR, my / SCALE_DOWN_FACTOR
 
@@ -129,30 +159,46 @@ def main():
                 if event.key == pygame.K_ESCAPE:
                     running = False
                 if event.key == pygame.K_SPACE:
-                    toggle = not toggle
+                    sim.step()
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if play_button.hit((mx, my)):
+                    playing = not playing and not sim.finished()
+                    step_timer = 0.0
+                elif step_button.hit((mx, my)):
+                    sim.step()
+                elif reset_button.hit((mx, my)):
+                    sim.reset()
+                    playing = False
 
-        # ---------------- Simulation
-        sim.step()
+        # ---------------- Simulation: auto-step while playing
+        if playing:
+            step_timer += dt
+            while step_timer >= 1 / STEPS_PER_SECOND:
+                step_timer -= 1 / STEPS_PER_SECOND
+                sim.step()
+            if sim.finished():
+                playing = False
+        play_button.label = "Pause" if playing else "Play"
 
-        # ---------------- Grids: recompose and rescale only when a cell changed
-        changed = [view.refresh() for view in views]
-        if any(changed):
-            screen2.fill(Endesga.darker_my_blue)
-            for view in views:
-                screen2.blit(view.surface, view.pos)
+        # ---------------- Grids: redraw and rescale only when the sim changed
+        version = (sim.version, sim.world.version, sim.liveMap.version)
+        if version != drawn_version:
+            draw_scene(screen2, sim, tile_size, positions, font_small)
             pygame.transform.scale(screen2, screen.get_size(), screen2_scaled)
+            drawn_version = version
 
         # ---------------- UI overlay (redrawn every frame)
         screenUI.fill((0, 0, 0, 0))
-        if toggle:
-            drawText(screenUI, Endesga.debug_red, font_regular, 5, screen_height - 30 / (SCALE_DOWN_FACTOR ** (1 / 1.8)),
-                     str(round(clock.get_fps())), Endesga.black, 1, antiAliasing=False)
-            pygame.draw.circle(screenUI, Endesga.black, (mx + 1, my + 1), 2, 1)
-            pygame.draw.circle(screenUI, Endesga.white, (mx, my), 2, 1)
+        for button in (play_button, step_button, reset_button):
+            button.draw(screenUI, font_small, (mx, my))
+        status = f"tick {sim.tick}" + ("  done" if sim.finished() else "")
+        drawText(screenUI, Endesga.greyL, font_small, reset_button.rect.right + 12, button_y + (button_h - font_small.get_height()) / 2, status)
+        drawText(screenUI, Endesga.debug_red, font_regular, 5, screen_height - 30 / (SCALE_DOWN_FACTOR ** (1 / 1.8)),
+                 str(round(clock.get_fps())), Endesga.black, 1, antiAliasing=False)
+        pygame.draw.circle(screenUI, Endesga.black, (mx + 1, my + 1), 2, 1)
+        pygame.draw.circle(screenUI, Endesga.white, (mx, my), 2, 1)
 
         screen.blit(screen2_scaled, (0, 0))
-        for drone in drones:
-            drone.draw(screen, world_origin_px, tile_size_px)
         screen.blit(pygame.transform.scale(screenUI, screen.get_size()), (0, 0))
 
         pygame.display.update()
