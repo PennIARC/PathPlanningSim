@@ -1,7 +1,7 @@
 """The project's colours, as [r, g, b] lists, plus what each one is used for."""
 
 
-MUTE = 0.25  # how far the drone and obstacle colours are pulled towards grey (0 = full colour, 1 = fully grey)
+MUTE = 0.4   # how far the drone and obstacle colours are pulled towards grey (0 = full colour, 1 = fully grey)
 
 
 def _muted(r, g, b):

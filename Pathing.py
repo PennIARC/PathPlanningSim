@@ -161,6 +161,11 @@ class Planner:
 
     def plan(self):
         """Makes sure every drone has a usable route to its next target."""
+        for x, y in self.obstacles:  # a cell found to be an obstacle no longer belongs to any drone
+            index = self.grid.cells[y][x].droneAllocationIndex
+            if index is not None:
+                self.drones[index].assignedCells.discard((x, y))
+                self.grid.set_cell(x, y, droneAllocationIndex=None)
         for _ in range(len(self.drones) + 1):  # taking a cell changes its owner's plan, so go round again
             changedOthers = False
             for drone in self.drones:

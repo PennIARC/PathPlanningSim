@@ -40,10 +40,14 @@ def drone_view_color(sim, x, y):
 
 
 def allocation_color(sim, x, y):
-    """Middle grid: each cell tinted with the colour of the drone it is assigned to."""
+    """Middle grid: each cell tinted with the colour of the drone it is assigned to.
+
+    Cells found to be obstacles are assigned to nobody and are left blank, so
+    they cannot be mistaken for free cells a drone skipped.
+    """
     index = sim.liveMap.cells[y][x].droneAllocationIndex
     if index is None:
-        return UNSEEN_COLOR
+        return BACKGROUND_COLOR
     return blend(UNSEEN_COLOR, sim.drones[index].color, ALLOCATION_OPACITY)
 
 
