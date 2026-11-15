@@ -37,7 +37,7 @@ class Simulation:
         self.planner.assign()
         self.record_visits()
         self.sense()
-        self.planner.plan()
+        self.planner.plan(self.tick)
         self.version += 1
 
     def randomize(self):
@@ -146,8 +146,8 @@ class Simulation:
                 drone.wait()
         self.record_visits()
         self.sense()
-        self.planner.plan()
         self.tick += 1
+        self.planner.plan(self.tick)
         self.version += 1
         return True
 

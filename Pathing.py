@@ -127,6 +127,11 @@ class Planner:
     STALL_FACTOR = 3   # a cell not reached within this many times (width + height) ticks is skipped
     CLIMB_COST = 3     # extra steps a drone will fly to finish cells at or below its row before moving up one row.
                        # Tuned by measurement on the 30 x 60 field: see the Parameters table in the README.
+    BACKTRACK_WEIGHT = 1.0  # a drone about to move up goes back for skipped cells below it if the trip is at most
+                            # this many times the rows it still has to climb (0 = never go back early)
+    REBALANCE_EVERY = 5     # ticks between checks that share work out between drones (0 = never)
+    REBALANCE_GAP = 10      # two neighbours' remaining work must differ by more than this many cells before cells move
+    HELP_MIN = 6            # a finished drone only helps a drone that has at least this many cells left
 
     def __init__(self, grid, drones, obstacles):
         self.grid = grid            # the live map; holds which drone each cell is assigned to
@@ -146,13 +151,17 @@ class Planner:
 
     # ---------------- Planning
 
-    def plan(self):
+    def plan(self, tick=0):
         """Makes sure every drone has a usable route to the next cell it should fly over."""
         for x, y in self.obstacles:  # a cell found to be an obstacle no longer belongs to any drone
             index = self.grid.cells[y][x].droneAllocationIndex
             if index is not None:
-                self.drones[index].assignedCells.discard((x, y))
+                drone = self.drones[index]
+                drone.assignedCells.discard((x, y))
+                self._drop(drone, (x, y))
                 self.grid.set_cell(x, y, droneAllocationIndex=None)
+        if self.REBALANCE_EVERY and tick % self.REBALANCE_EVERY == 0:
+            self._rebalance()
         for _ in range(len(self.drones) + 1):  # taking a cell changes its owner's plan, so go round again
             changedOthers = False
             for drone in self.drones:
@@ -217,10 +226,60 @@ class Planner:
                     continue
                 cost = len(route) + self._climb(position, end)
                 if best is None or cost < best[0]:
-                    best = (cost, route)
+                    best = (cost, route, end)
             if best is not None:
+                if best[2][1] < position[1]:  # about to move up a row: first see if skipped cells below are worth going back for
+                    goBack = self._route_back_to_skipped(position, targets)
+                    if goBack:
+                        return goBack
                 return best[1]
         return []
+
+    def _route_back_to_skipped(self, position, targets):
+        """Route to the nearest skipped cell below the drone, if going back for it now beats leaving it to the end.
+
+        Going back now costs about the trip there and back. Leaving it costs
+        about the trip plus the rows still to climb, since the drone then has
+        to come all the way down again. So it is worth going back when the trip
+        is no longer than BACKTRACK_WEIGHT times the rows left to climb.
+
+        Only cells whose shortest route runs entirely through cells the drones
+        have already seen count. While an unseen cell could still be a way in,
+        the drone keeps sweeping and finds out.
+        """
+        if not self.BACKTRACK_WEIGHT:
+            return None
+        below = [end for end in self._run_ends(targets) if end[1] > position[1]]
+        budget = self.BACKTRACK_WEIGHT * (position[1] - min(y for _, y in targets))
+        if not below or budget < 1:
+            return None
+        steps = self._steps_through_seen(position, budget)
+        for known, end in sorted((steps[end], end) for end in below if end in steps)[:3]:
+            route = astar(self.grid, position, end, self.obstacles)
+            if route and len(route) == known:  # no shorter way through unseen cells, so this route is certain
+                return route
+        return None
+
+    def _steps_through_seen(self, position, limit, seenOnly=True):
+        """Steps from `position` to every cell within `limit` steps, moving only through cells already seen.
+
+        The last step may land on an unseen cell, so cells bordering the seen area are included.
+        With seenOnly off, unseen cells count as free, which is how A* treats them.
+        """
+        steps = {position: 0}
+        queue = collections.deque([position])
+        while queue:
+            cell = queue.popleft()
+            if steps[cell] >= limit:
+                continue
+            for dx, dy in NEIGHBOURS:
+                nxt = (cell[0] + dx, cell[1] + dy)
+                if not self.grid.in_bounds(*nxt) or nxt in self.obstacles or nxt in steps:
+                    continue
+                steps[nxt] = steps[cell] + 1
+                if not seenOnly or self.grid.cells[nxt[1]][nxt[0]].searched:
+                    queue.append(nxt)
+        return steps
 
     @staticmethod
     def _straight_steps(a, b):
@@ -340,6 +399,90 @@ class Planner:
                     queue.append(nxt)
         return False
 
+    # ---------------- Sharing work out between drones
+
+    @staticmethod
+    def _load(drone):
+        """Rough count of the work a drone has left: cells to fly over, plus any long trip it is on."""
+        return len(drone.targets) + len(drone.stops) + (len(drone.route) if drone.detouring else 0)
+
+    def _transfer(self, cells, source, receiver):
+        """Moves cells from one drone's sweep to another's."""
+        for cell in cells:
+            self._drop(source, cell)
+            source.assignedCells.discard(cell)
+            receiver.targets.add(cell)
+            receiver.assignedCells.add(cell)
+            self.grid.set_cell(cell[0], cell[1], droneAllocationIndex=receiver.index)
+        if source.route and source.route[-1] in cells:
+            source.route = []
+        receiver.inTransit = False
+
+    def _rebalance(self):
+        """Evens out the work: finished drones help the busiest one, and neighbours shift their shared boundary."""
+        helped = set()  # drones given cells in this pass; nobody takes work from them straight away
+        for drone in self.drones:
+            if drone.finished() and not drone.makingWay:
+                self._help_busiest(drone, helped)
+        for left, right in zip(self.drones, self.drones[1:]):
+            if not left.finished() and not right.finished():
+                self._shift_boundary(left, right)
+
+    def _help_busiest(self, helper, helped):
+        """A finished drone takes over the cells the busiest drone would reach last.
+
+        It takes as many as it can finish, travel included, by the time the
+        other drone finishes the rest, so the two end at about the same time.
+        """
+        busy = [d for d in self.drones if d is not helper and not d.finished() and d not in helped]
+        if not busy:
+            return
+        owner = max(busy, key=lambda d: (self._load(d), -d.index))
+        if self._load(owner) < self.HELP_MIN or not owner.targets:
+            return
+        arrival = self._arrival_ticks(owner, 4 * self._load(owner) + self.grid.width + self.grid.height)
+        never = float("inf")
+        # Soonest first. Cells the owner is not predicted to reach at all are left with it to sort out.
+        order = sorted((cell for cell in owner.targets if cell in arrival), key=lambda cell: (arrival[cell], cell))
+        steps = self._steps_through_seen(helper.position, never, seenOnly=False)  # real distances, around known obstacles
+        nearest = never  # helper's distance to the closest cell it would take
+        travel = [0] * len(order)
+        for i in range(len(order) - 1, -1, -1):
+            nearest = min(nearest, steps.get(order[i], never))
+            travel[i] = nearest
+        for keep in range(1, len(order) - 1):
+            ownerDone = arrival[order[keep - 1]]  # when the owner would finish the cells it keeps
+            if travel[keep] + len(order) - keep <= ownerDone:
+                self._transfer(order[keep:], owner, helper)
+                helped.add(helper)
+                return
+
+    def _shift_boundary(self, left, right):
+        """If one of two neighbouring drones has much more left to do, the other takes a one-cell strip of its column.
+
+        The strip is the heavier drone's cell nearest the lighter drone in every
+        row above both of them, where that cell touches the lighter drone's
+        cells. Those rows simply become one cell wider for the lighter drone.
+        """
+        heavy, light = (left, right) if self._load(left) >= self._load(right) else (right, left)
+        gap = self._load(heavy) - self._load(light)
+        if gap <= self.REBALANCE_GAP:
+            return
+        towards = 1 if light is right else -1
+        top = min(left.position[1], right.position[1]) - 1  # leave the rows the drones are working on alone
+        rows = collections.defaultdict(list)
+        for x, y in heavy.targets:
+            if y < top:
+                rows[y].append(x)
+        strip = []
+        for y, xs in rows.items():
+            x = max(xs) if towards == 1 else min(xs)
+            beside = (x + towards, y)
+            if self.grid.in_bounds(*beside) and self.grid.cells[y][beside[0]].droneAllocationIndex == light.index:
+                strip.append((x, y))
+        if strip and len(strip) < gap:  # moving the strip narrows the gap rather than reversing it
+            self._transfer(strip, heavy, light)
+
     def _take_cells(self, drone):
         """Applies the three cases to every other drone's cell on this drone's detour."""
         changedOthers = False
@@ -379,7 +522,7 @@ class Planner:
         count = 0
         position = drone.position
         stops, targets = list(drone.stops), set(drone.targets)
-        leg = drone.route
+        leg = drone.route or self._next_leg(position, stops, targets)  # it may not have planned its next step yet
         while leg and count < horizon:
             for cell in leg:
                 count += 1
