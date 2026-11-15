@@ -219,7 +219,7 @@ def main():
         (sim.clusterWeight, 1.0, MAX_CLUSTER_WEIGHT, CLUSTER_WEIGHT_STEP, sim.set_cluster_weight,
          lambda: f"clustering {sim.clusterWeight:.1f}x", 82),
         (sim.obstacleRounds, 1, MAX_OBSTACLE_ROUNDS, 1, sim.set_obstacle_rounds,
-         lambda: f"rounds {sim.obstacleRounds}", 52),
+         lambda: f"rounds {sim.obstacleRounds}", 64),
     ]
     bar_w = sum(widths) + gap * len(widths) + sum(slider_w + gap + 10 + spec[-1] for spec in slider_specs) + status_w
     x = (screen_width - bar_w) // 2
