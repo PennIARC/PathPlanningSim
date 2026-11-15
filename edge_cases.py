@@ -24,32 +24,49 @@ pygame.display.set_mode((1, 1))
 
 import main
 from palette import BACKGROUND_COLOR
+from Pathing import Planner
 from Sim import Simulation
 
 OUT_DIR = os.path.join("docs", "edge_cases")
 TILE = 20  # px per cell before the 2x upscale, so cells come out 40 px wide
 
-# name -> (width, height, number of drones, obstacle cells). (0, 0) is the top-left cell; drones start on the bottom row.
+OFF = float("inf")
+
+# Work sharing between drones is switched off unless a case is about it, so each map shows one thing.
+NO_SHARING = {"REBALANCE_EVERY": 0}
+
+# name -> (width, height, number of drones, obstacle cells, planner settings for this case).
+# (0, 0) is the top-left cell; drones start on the bottom row.
 CASES = {
-    "blocked_cell": (2, 6, 1, [(0, 3)]),
-    "same_tick": (12, 6, 4, [(0, 1), (0, 4), (3, 0), (3, 4), (4, 4), (6, 3), (7, 4), (8, 5)]),
-    "neighbour_cells": (8, 8, 2, [(4, 5), (6, 6)]),
-    "unreachable_cell": (8, 8, 2, [(4, 0), (5, 1), (6, 0)]),
-    "head_on": (12, 6, 4, [(4, 2), (6, 0), (6, 3), (7, 4), (8, 5), (9, 4), (11, 1)]),
-    "corridor": (6, 7, 2, [(1, 0), (3, 1), (4, 1), (5, 1)]),
-    "boxed_in_start": (12, 6, 4, [(2, 5), (3, 4)]),
-    "parked_drone": (6, 7, 2, [(1, 3), (3, 1), (4, 0)]),
-    "start_walk": (12, 5, 4, []),
-    "nearer_end": (6, 6, 1, [(1, 3), (2, 3), (3, 3), (4, 3), (5, 3)]),
-    "wall": (7, 10, 1, [(3, y) for y in range(2, 8)]),
+    "blocked_cell": (2, 6, 1, [(0, 3)], NO_SHARING),
+    "same_tick": (12, 6, 4, [(0, 1), (0, 4), (3, 0), (3, 4), (4, 4), (6, 3), (7, 4), (8, 5)], NO_SHARING),
+    "neighbour_cells": (8, 8, 2, [(4, 5), (6, 6)], NO_SHARING),
+    "unreachable_cell": (8, 8, 2, [(4, 0), (5, 1), (6, 0)], NO_SHARING),
+    "head_on": (12, 6, 4, [(4, 2), (6, 0), (6, 3), (7, 4), (8, 5), (9, 4), (11, 1)], NO_SHARING),
+    "corridor": (6, 7, 2, [(1, 0), (3, 1), (4, 1), (5, 1)], NO_SHARING),
+    "boxed_in_start": (12, 6, 4, [(2, 5), (3, 4)], NO_SHARING),
+    "parked_drone": (6, 7, 2, [(1, 3), (3, 1), (4, 0)], NO_SHARING),
+    "start_walk": (12, 5, 4, [], NO_SHARING),
+    "nearer_end": (6, 6, 1, [(1, 3), (2, 3), (3, 3), (4, 3), (5, 3)], NO_SHARING),
+    "wall": (7, 10, 1, [(3, y) for y in range(2, 8)], NO_SHARING),
+    "skipped_area": (9, 16, 1, [(5, y) for y in range(10, 14)] + [(x, 9) for x in range(0, 6)], NO_SHARING),
+    "finished_drone_helps": (9, 10, 2, [], {"REBALANCE_GAP": OFF}),
+    "boundary_shift": (9, 14, 2, [], {"HELP_MIN": OFF}),
 }
 
 
 def run(case):
-    width, height, numDrones, obstacles = CASES[case]
-    sim = Simulation(numDrones=numDrones, width=width, height=height, obstacles=obstacles)
-    while sim.step():
-        pass
+    width, height, numDrones, obstacles, settings = CASES[case]
+    saved = {name: getattr(Planner, name) for name in settings}
+    for name, value in settings.items():
+        setattr(Planner, name, value)
+    try:
+        sim = Simulation(numDrones=numDrones, width=width, height=height, obstacles=obstacles)
+        while sim.step():
+            pass
+    finally:
+        for name, value in saved.items():
+            setattr(Planner, name, value)
     return sim
 
 
