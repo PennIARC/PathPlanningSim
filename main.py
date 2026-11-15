@@ -32,6 +32,7 @@ MAX_OBSTACLE_ROUNDS = 12   # right-hand end of the rounds slider; its left-hand 
 HOLD_DELAY = 0.2           # seconds an arrow key or the Step / Back button must be held before it starts repeating
 TRAIL_SUPERSAMPLE = 2      # trails and drones are drawn this many times larger, then shrunk, to smooth their edges
 TRAIL_WIDTH = 1.5          # trail thickness, in scaled-down px
+DEFAULT_SEED = 0           # every combination of slider settings starts on this obstacle layout; Randomize changes it
 TRAIL_OPACITY = 0.55       # how strongly a trail shows over the grid
 
 
@@ -240,12 +241,12 @@ def main():
 
     # Optional starting map, e.g. to replay one that stress_test.py flagged
     parser = argparse.ArgumentParser(description="Path planning visualizer")
-    parser.add_argument("--seed", type=int, help="obstacle layout to start with")
+    parser.add_argument("--seed", type=int, help="obstacle layout every slider setting starts on (default 0)")
     parser.add_argument("--obstacles", type=float, help="share of cells that are obstacles, e.g. 0.2")
     parser.add_argument("--clustering", type=float, help="clustering multiplier, e.g. 10")
     parser.add_argument("--rounds", type=int, help="obstacle placement rounds, e.g. 8")
     args = parser.parse_args()
-    options = {"seed": args.seed, "obstacleRate": args.obstacles, "clusterWeight": args.clustering, "obstacleRounds": args.rounds}
+    options = {"seed": DEFAULT_SEED if args.seed is None else args.seed, "obstacleRate": args.obstacles, "clusterWeight": args.clustering, "obstacleRounds": args.rounds}
     sim = Simulation(keepHistory=True, **{name: value for name, value in options.items() if value is not None})
     tile_size, positions = layout_grids((screen_width, screen_height), sim.world.width, sim.world.height, len(VIEWS))
     drone_layer_scale = tile_size * SCALE_DOWN_FACTOR * TRAIL_SUPERSAMPLE

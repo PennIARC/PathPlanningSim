@@ -19,7 +19,11 @@ class Simulation:
         self.fixedObstacles = obstacles  # explicit list of (x, y) obstacle cells; None means place them at random
         self.keepHistory = keepHistory  # snapshot every tick so step_back() works; costs a few ms per tick
         self.obstacleRate = obstacleRate
-        self.seed = random.randrange(1_000_000) if seed is None else seed
+        # Every combination of obstacle settings starts on the same seed, so going back to a combination
+        # brings back the map it had. randomize() picks a new seed for the current combination only.
+        self.defaultSeed = random.randrange(1_000_000) if seed is None else seed
+        self.seeds = {}  # (obstacle count, cluster weight, rounds) -> seed, for combinations that were randomized
+        self.seed = self.defaultSeed
         self.version = 0  # goes up whenever anything changes, so the visualizer knows when to redraw
         self.reset()
 
@@ -40,13 +44,21 @@ class Simulation:
         self.planner.plan(self.tick)
         self.version += 1
 
+    def _settings_key(self):
+        return self.obstacle_count(), round(self.clusterWeight, 3), self.obstacleRounds
+
     def randomize(self):
-        """New random obstacle layout, and drones back to their starting cells."""
-        self.seed = random.randrange(1_000_000)
+        """New random obstacle layout for the current obstacle settings, and drones back to their starting cells."""
+        self.seed = self.seeds[self._settings_key()] = random.randrange(1_000_000)
+        self.reset()
+
+    def _settings_changed(self):
+        """Rebuilds the map for the new obstacle settings, on the seed those settings last had."""
+        self.seed = self.seeds.get(self._settings_key(), self.defaultSeed)
         self.reset()
 
     def set_obstacle_rate(self, rate):
-        """Changes how much of the map is obstacles (0 to 1), with a fresh random layout, and resets.
+        """Changes how much of the map is obstacles (0 to 1), and resets on the layout those settings last had.
 
         Returns False if the number of obstacles did not change, in which case nothing is touched.
         """
@@ -55,25 +67,25 @@ class Simulation:
             self.obstacleRate = rate
             return False
         self.obstacleRate = rate
-        self.randomize()
+        self._settings_changed()
         return True
 
     def set_cluster_weight(self, weight):
-        """Changes how strongly obstacles clump together, with a fresh random layout, and resets. False if unchanged."""
+        """Changes how strongly obstacles clump together, and resets on the layout those settings last had. False if unchanged."""
         weight = max(1.0, weight)
         if weight == self.clusterWeight:
             return False
         self.clusterWeight = weight
-        self.randomize()
+        self._settings_changed()
         return True
 
     def set_obstacle_rounds(self, rounds):
-        """Changes how many rounds the obstacles are placed in, with a fresh random layout, and resets. False if unchanged."""
+        """Changes how many rounds the obstacles are placed in, and resets on the layout those settings last had. False if unchanged."""
         rounds = max(1, int(round(rounds)))
         if rounds == self.obstacleRounds:
             return False
         self.obstacleRounds = rounds
-        self.randomize()
+        self._settings_changed()
         return True
 
     def obstacle_count(self, rate=None):
@@ -92,7 +104,7 @@ class Simulation:
             for x, y in self.fixedObstacles:
                 self.world.set_cell(x, y, isObstacle=True)
             return
-        # Seeded, so reset() rebuilds the same layout until randomize() picks a new seed
+        # Seeded, so the same settings and seed always give the same layout
         rng = random.Random(self.seed)
         spawnCells = {d.position for d in self.drones}
         free = [(x, y) for y in range(self.world.height) for x in range(self.world.width) if (x, y) not in spawnCells]
