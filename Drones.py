@@ -1,6 +1,6 @@
-import pygame
-
+NUM_DRONES = 4
 SIGHT_RANGE = 1  # cells seen in every direction (including diagonals), plus the cell under the drone
+DRONE_COLORS = [[255, 96, 141], [237, 171, 80], [99, 199, 77], [44, 232, 245]]
 
 
 class Drone:
@@ -37,7 +37,7 @@ class Drone:
         """Looks at the real map around the drone and records what it sees on the live map.
 
         Only touches live-map cells whose state actually changes, so calling this
-        every frame costs no redraws while the drone sits still.
+        every step costs no redraws while the drone sits still.
         """
         for x, y in self.visible_cells(world):
             isObstacle = world.cells[y][x].isObstacle
@@ -51,8 +51,17 @@ class Drone:
         """Draws the drone as a circle centred on its cell.
 
         origin is the top-left pixel of the grid on `surface`; tile_size is the
-        pixel size of one cell on that surface.
+        pixel size of one cell on that surface. pygame is imported here so the
+        rest of this module works without it when the sim runs headless.
         """
+        import pygame
+
         cx = origin[0] + (self.position[0] + 0.5) * tile_size
         cy = origin[1] + (self.position[1] + 0.5) * tile_size
         pygame.draw.circle(surface, self.color, (cx, cy), max(2, tile_size / 2))
+
+
+def spawn_drones(world, liveMap, numDrones=NUM_DRONES):
+    """Drones stacked one cell each on the left edge, centred vertically."""
+    first_y = (world.height - numDrones) // 2
+    return [Drone(i, DRONE_COLORS[i % len(DRONE_COLORS)], (0, first_y + i), liveMap) for i in range(numDrones)]

@@ -1,7 +1,6 @@
 import pygame
 
-from grid import Grid
-from drone import Drone
+from Sim import Simulation
 from text import drawText
 from fontDict import fonts
 
@@ -10,7 +9,6 @@ FPS = 60
 SCALE_DOWN_FACTOR = 2  # draw at 1/2 resolution and scale up, as in GridTesting
 PADDING = 20           # px (in scaled-down space) kept clear around each grid
 TILE_GAP = 1           # px between cells, which is what makes the grid visible
-NUM_DRONES = 4
 UNSEEN_OPACITY = 0.3   # live map: how strongly a cell's colour shows before any drone has seen it
 
 
@@ -23,18 +21,17 @@ class Endesga:
     debug_red = [255, 96, 141]
 
 
-DRONE_COLORS = [[255, 96, 141], [237, 171, 80], [99, 199, 77], [44, 232, 245]]
 OBSTACLE_COLOR = [0, 0, 0]
 UNALLOCATED_COLOR = Endesga.grey_blue
 
 
 def world_cell_color(cell):
-    """Left grid (the real map): colouring unchanged for now."""
+    """Top grid (the real map): colouring unchanged for now."""
     return Endesga.my_blue
 
 
 def make_live_cell_color(drones):
-    """Right grid (the live map): colour = allocated drone, opacity = seen, black = known obstacle."""
+    """Bottom grid (the live map): colour = allocated drone, opacity = seen, black = known obstacle."""
     background = Endesga.darker_my_blue
 
     def live_cell_color(cell):
@@ -55,25 +52,18 @@ def compute_tile_size(region_size, grid):
 
 
 def layout_grids(surface_size, grids):
-    """Splits the surface into equal-width columns, one per grid, left to right.
+    """Splits the surface into equal-height bands, one per grid, top to bottom.
 
     Returns the shared tile size and the top-left draw position of each grid,
-    centred inside its column.
+    centred inside its band.
     """
-    column_w = surface_size[0] // len(grids)
-    tile_size = min(compute_tile_size((column_w, surface_size[1]), g) for g in grids)
+    band_h = surface_size[1] // len(grids)
+    tile_size = min(compute_tile_size((surface_size[0], band_h), g) for g in grids)
     positions = []
     for i, g in enumerate(grids):
         w, h = g.width * tile_size, g.height * tile_size
-        positions.append((i * column_w + (column_w - w) // 2, (surface_size[1] - h) // 2))
+        positions.append(((surface_size[0] - w) // 2, i * band_h + (band_h - h) // 2))
     return tile_size, positions
-
-
-def spawn_drones(world, liveMap):
-    """Drones side by side, one cell each, centred on the bottom row."""
-    first_x = (world.width - NUM_DRONES) // 2
-    y = world.height - 1
-    return [Drone(i, DRONE_COLORS[i % len(DRONE_COLORS)], (first_x + i, y), liveMap) for i in range(NUM_DRONES)]
 
 
 class GridView:
@@ -112,9 +102,8 @@ def main():
     screenUI = pygame.Surface((screen_width, screen_height)).convert_alpha()
     font_regular = fonts[f"regular{int(25 / (SCALE_DOWN_FACTOR ** (1 / 1.5)))}"]
 
-    world = Grid()    # left: the real map, including obstacles the drones have not found yet
-    liveMap = Grid()  # right: what the drones know so far
-    drones = spawn_drones(world, liveMap)
+    sim = Simulation()
+    world, liveMap, drones = sim.world, sim.liveMap, sim.drones  # world is drawn on top, liveMap below it
 
     tile_size, (world_pos, live_pos) = layout_grids((screen_width, screen_height), [world, liveMap])
     views = [
@@ -143,8 +132,7 @@ def main():
                     toggle = not toggle
 
         # ---------------- Simulation
-        for drone in drones:
-            drone.sense(world, liveMap)
+        sim.step()
 
         # ---------------- Grids: recompose and rescale only when a cell changed
         changed = [view.refresh() for view in views]

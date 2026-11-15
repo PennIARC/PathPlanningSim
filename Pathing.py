@@ -1,5 +1,5 @@
-GRID_WIDTH = 40    # cells (80 ft across the field at 2 ft per cell)
-GRID_HEIGHT = 150  # cells (300 ft along the field at 2 ft per cell); drones start at the bottom
+GRID_WIDTH = 150   # cells (300 ft along the field at 2 ft per cell)
+GRID_HEIGHT = 40   # cells (80 ft across the field at 2 ft per cell)
 CELL_SIZE_FT = 2
 
 
