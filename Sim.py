@@ -22,12 +22,14 @@ class Simulation:
         self.world = Grid()    # the real map, including obstacles the drones have not found yet
         self.liveMap = Grid()  # what the drones know so far, plus which drone each cell is assigned to
         self.knownObstacles = set()  # (x, y) obstacle cells seen so far, shared by every drone
-        self.drones = spawn_drones(self.world, self.knownObstacles, self.numDrones)
+        self.cellPasses = {}         # (cell, cell) -> times any drone has flown between them, shared by every drone
+        self.drones = spawn_drones(self.world, self.knownObstacles, self.cellPasses, self.numDrones)
         self.planner = Planner(self.liveMap, self.drones, self.knownObstacles)
         self.tick = 0
         self.history = []  # one snapshot per tick taken so far, so step_back() can undo them
         self.place_obstacles()
         self.planner.assign()
+        self.record_visits()
         self.sense()
         self.planner.plan()
         self.version += 1
@@ -62,6 +64,15 @@ class Simulation:
         for x, y in rng.sample(free, min(self.obstacle_count(), len(free))):
             self.world.set_cell(x, y, isObstacle=True)
 
+    def record_visits(self):
+        """Notes on the live map which drones have flown over each cell."""
+        for drone in self.drones:
+            x, y = drone.position
+            visitedBy = self.liveMap.cells[y][x].visitedBy
+            if drone.index not in visitedBy:
+                visitedBy.append(drone.index)
+                self.liveMap.touch()
+
     def sense(self):
         for drone in self.drones:
             drone.sense(self.world, self.liveMap)
@@ -77,8 +88,8 @@ class Simulation:
         if self.finished():
             return False
         if self.keepHistory:
-            # Copied together so the drones in the snapshot still share one obstacle set
-            self.history.append(copy.deepcopy((self.liveMap, self.knownObstacles, self.drones)))
+            # Copied together so the drones in the snapshot still share one obstacle set and one pass count
+            self.history.append(copy.deepcopy((self.liveMap, self.knownObstacles, self.cellPasses, self.drones)))
         moving = self.planner.resolve_moves()
         for drone in self.drones:
             drone.ticksSinceProgress += 1
@@ -86,6 +97,7 @@ class Simulation:
                 drone.advance()
             elif drone.route:
                 drone.wait()
+        self.record_visits()
         self.sense()
         self.planner.plan()
         self.tick += 1
@@ -96,7 +108,7 @@ class Simulation:
         """Undoes the last tick. Needs keepHistory=True. Returns False if there is nothing to undo."""
         if not self.history:
             return False
-        self.liveMap, self.knownObstacles, self.drones = self.history.pop()
+        self.liveMap, self.knownObstacles, self.cellPasses, self.drones = self.history.pop()
         self.planner = Planner(self.liveMap, self.drones, self.knownObstacles)
         self.tick -= 1
         self.version += 1

@@ -9,12 +9,13 @@ NEIGHBOURS = ((1, 0), (-1, 0), (0, -1), (0, 1))  # drones move one cell left, ri
 class Cell:
     """One grid cell. Colouring in the visualizer is derived from these params."""
 
-    __slots__ = ("droneAllocationIndex", "searched", "isObstacle")
+    __slots__ = ("droneAllocationIndex", "searched", "isObstacle", "visitedBy")
 
     def __init__(self):
         self.droneAllocationIndex = None  # index of the drone assigned to this cell, None if unassigned
         self.searched = False
         self.isObstacle = False
+        self.visitedBy = []  # indices of the drones that have flown over this cell, in order of first visit
 
 
 class Grid:

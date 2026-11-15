@@ -17,6 +17,7 @@ BAR_H = 36              # px at the bottom for the buttons
 TILE_GAP = 1            # px between cells, which is what makes the grid visible
 STEPS_PER_SECOND = 20   # auto-step speed while playing
 ALLOCATION_OPACITY = 0.6   # middle grid: how strongly a drone's colour tints its cells
+VISIT_OUTLINE = 2          # middle grid: thickness in scaled-down px of the outline a visiting drone leaves on a cell
 MAX_OBSTACLE_RATE = 0.2    # right-hand end of the obstacle slider
 OBSTACLE_RATE_STEP = 0.005 # the slider moves in steps of this size (0.5%)
 HOLD_DELAY = 0.2           # seconds a step key or button must be held before it starts repeating
@@ -51,10 +52,28 @@ def obstacles_color(sim, x, y):
     return OBSTACLE_COLOR if sim.world.cells[y][x].isObstacle else UNSEEN_COLOR
 
 
+def draw_visit_outlines(surface, sim, x, y, rect):
+    """Middle grid: one outline per drone that has flown over the cell, in that drone's colour.
+
+    The first visitor's outline is outermost and later ones nest inside it.
+    With three or more the outlines thin out so they all still fit.
+    """
+    visitedBy = sim.liveMap.cells[y][x].visitedBy
+    if not visitedBy:
+        return
+    thickness = VISIT_OUTLINE if len(visitedBy) <= 2 else max(1, rect.width // (2 * len(visitedBy) + 1))
+    for i, index in enumerate(visitedBy):
+        ring = rect.inflate(-2 * i * thickness, -2 * i * thickness)
+        if ring.width <= 0:
+            break
+        pygame.draw.rect(surface, sim.drones[index].color, ring, thickness if ring.width > 2 * thickness else 0)
+
+
+# (title, cell colour function, optional function that draws extra detail on top of each cell)
 VIEWS = [
-    ("Drone view", drone_view_color),
-    ("Allocation", allocation_color),
-    ("Obstacles", obstacles_color),
+    ("Drone view", drone_view_color, None),
+    ("Allocation", allocation_color, draw_visit_outlines),
+    ("Obstacles", obstacles_color, None),
 ]
 
 
@@ -78,11 +97,14 @@ def draw_grids(surface, sim, tile_size, positions, font):
     surface.fill(BACKGROUND_COLOR)
     fill = tile_size - TILE_GAP
     width, height = sim.world.width, sim.world.height
-    for (title, color_fn), (ox, oy) in zip(VIEWS, positions):
+    for (title, color_fn, detail_fn), (ox, oy) in zip(VIEWS, positions):
         drawText(surface, TEXT_COLOR, font, ox + width * tile_size / 2, oy - TITLE_H, title, justify="center")
         for y in range(height):
             for x in range(width):
-                pygame.draw.rect(surface, color_fn(sim, x, y), (ox + x * tile_size, oy + y * tile_size, fill, fill))
+                rect = pygame.Rect(ox + x * tile_size, oy + y * tile_size, fill, fill)
+                pygame.draw.rect(surface, color_fn(sim, x, y), rect)
+                if detail_fn:
+                    detail_fn(surface, sim, x, y, rect)
 
 
 def draw_drones(surface, layer, trail_layer, sim, tile_size, position):
