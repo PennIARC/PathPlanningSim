@@ -1,40 +1,41 @@
-"""The project's colour palette, as [r, g, b] lists, plus what each colour is used for."""
-
-
-MUTE = 0.25  # how far each palette colour is pulled towards grey (0 = as given, 1 = fully grey)
+"""The project's colours, as [r, g, b] lists, plus what each one is used for."""
 
 
 def _rgb(hex_code):
-    """Hex code to [r, g, b], desaturated by MUTE."""
     hex_code = hex_code.lstrip("#")
-    r, g, b = (int(hex_code[i:i + 2], 16) for i in (0, 2, 4))
-    grey = 0.299 * r + 0.587 * g + 0.114 * b  # perceived brightness, so muting keeps each colour as light as it was
-    return [round(c + (grey - c) * MUTE) for c in (r, g, b)]
+    return [int(hex_code[i:i + 2], 16) for i in (0, 2, 4)]
 
 
 class Palette:
-    teal = _rgb("#3F8985")
-    teal_mid = _rgb("#29727B")
-    teal_dark = _rgb("#1B576F")
-    blue = _rgb("#0B3C60")
-    navy = _rgb("#051D48")
-    navy_dark = _rgb("#010434")
-    purple_dark = _rgb("#1C0728")
-    purple = _rgb("#4B0A2E")
-    maroon_dark = _rgb("#512431")
-    maroon = _rgb("#723033")
-    red = _rgb("#B73A29")
-    orange = _rgb("#BD6C43")
+    """The five colours from the bottom row of orbs in the Super Plum 21 palette."""
+    magenta = _rgb("#A63A82")
+    rust = _rgb("#A64B4B")
+    teal = _rgb("#15788C")
+    blue = _rgb("#266EFF")
+    purple = _rgb("#6F66CC")
 
 
-BACKGROUND_COLOR = [16, 18, 21]        # behind everything, and the gaps between cells (not from the palette)
-UNSEEN_COLOR = Palette.navy            # default cell
-SEEN_COLOR = Palette.blue              # cell a drone has seen
+class Neutral:
+    """Greys and dark blues for everything that is not a drone or an obstacle."""
+    background = [16, 18, 21]
+    cell = [32, 36, 46]
+    cell_light = [56, 63, 82]
+    grey_blue = [66, 76, 110]
+    text = [200, 200, 200]
+    white = [255, 255, 255]
+    pink = [255, 96, 141]
+
+
+BACKGROUND_COLOR = Neutral.background  # behind everything, and the gaps between cells
+UNSEEN_COLOR = Neutral.cell            # default cell
+SEEN_COLOR = Neutral.cell_light        # cell a drone has seen
 OBSTACLE_COLOR = Palette.purple
-TEXT_COLOR = Palette.teal
-ACCENT_COLOR = Palette.orange          # FPS counter, cursor, slider handle
-BUTTON_COLOR = Palette.navy
-BUTTON_HOVER_COLOR = Palette.teal_dark
+TEXT_COLOR = Neutral.text
+FPS_COLOR = Neutral.pink
+CURSOR_COLOR = Neutral.white
+SLIDER_HANDLE_COLOR = Neutral.text
+BUTTON_COLOR = Neutral.cell
+BUTTON_HOVER_COLOR = Neutral.grey_blue
 
 # Ordered so that drones in neighbouring strips contrast with each other
-DRONE_COLORS = [Palette.red, Palette.teal, Palette.maroon, Palette.orange]
+DRONE_COLORS = [Palette.magenta, Palette.teal, Palette.rust, Palette.blue]

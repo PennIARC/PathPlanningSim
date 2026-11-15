@@ -3,8 +3,8 @@ import time
 import pygame
 
 from Sim import Simulation
-from palette import (ACCENT_COLOR, BACKGROUND_COLOR, BUTTON_COLOR, BUTTON_HOVER_COLOR, OBSTACLE_COLOR, SEEN_COLOR,
-                     TEXT_COLOR, UNSEEN_COLOR)
+from palette import (BACKGROUND_COLOR, BUTTON_COLOR, BUTTON_HOVER_COLOR, CURSOR_COLOR, FPS_COLOR, OBSTACLE_COLOR,
+                     SEEN_COLOR, SLIDER_HANDLE_COLOR, TEXT_COLOR, UNSEEN_COLOR)
 from text import drawText
 from fontDict import fonts
 
@@ -18,6 +18,8 @@ TILE_GAP = 1            # px between cells, which is what makes the grid visible
 STEPS_PER_SECOND = 20   # auto-step speed while playing
 ALLOCATION_OPACITY = 0.6   # middle grid: how strongly a drone's colour tints its cells
 MAX_OBSTACLE_RATE = 0.5    # right-hand end of the obstacle slider
+HOLD_DELAY = 0.2           # seconds Space or the Step button must be held before it starts ticking continuously
+TRAIL_SUPERSAMPLE = 3      # trails and drones are drawn this many times larger, then shrunk, to smooth their edges
 
 
 def blend(base, over, opacity):
@@ -80,15 +82,22 @@ def draw_grids(surface, sim, tile_size, positions, font):
                 pygame.draw.rect(surface, color_fn(sim, x, y), (ox + x * tile_size, oy + y * tile_size, fill, fill))
 
 
-def draw_drones(surface, sim, tile_size, position):
-    """Draws trails and drones over the left grid, at full resolution so the curved corners stay smooth."""
-    s = SCALE_DOWN_FACTOR
+def draw_drones(surface, layer, sim, tile_size, position):
+    """Draws trails and drones over the left grid of the full-size surface.
+
+    They are drawn oversized onto `layer` and shrunk with smoothing, which
+    anti-aliases them so every curved corner looks the same.
+    """
+    scale = SCALE_DOWN_FACTOR * TRAIL_SUPERSAMPLE
+    layer.fill((0, 0, 0, 0))
     # Cell centres are offset by half the gap, since each cell is drawn one gap short of its tile
-    origin = ((position[0] - TILE_GAP / 2) * s, (position[1] - TILE_GAP / 2) * s)
+    origin = (-TILE_GAP / 2 * scale, -TILE_GAP / 2 * scale)
     for drone in sim.drones:
-        drone.draw_trail(surface, origin, tile_size * s, width=s)
+        drone.draw_trail(layer, origin, tile_size * scale, width=scale)
     for drone in sim.drones:
-        drone.draw(surface, origin, tile_size * s)
+        drone.draw(layer, origin, tile_size * scale)
+    size = (layer.get_width() // TRAIL_SUPERSAMPLE, layer.get_height() // TRAIL_SUPERSAMPLE)
+    surface.blit(pygame.transform.smoothscale(layer, size), (position[0] * SCALE_DOWN_FACTOR, position[1] * SCALE_DOWN_FACTOR))
 
 
 class Button:
@@ -128,7 +137,7 @@ class Slider:
         handle_x = self.rect.left + self.rect.width * self.value / self.max_value
         pygame.draw.line(surface, BUTTON_HOVER_COLOR, (self.rect.left, track_y), (self.rect.right, track_y), 2)
         pygame.draw.line(surface, TEXT_COLOR, (self.rect.left, track_y), (handle_x, track_y), 2)
-        pygame.draw.circle(surface, ACCENT_COLOR, (handle_x, track_y), 4)
+        pygame.draw.circle(surface, SLIDER_HANDLE_COLOR, (handle_x, track_y), 4)
 
 
 def main():
@@ -146,6 +155,8 @@ def main():
 
     sim = Simulation()
     tile_size, positions = layout_grids((screen_width, screen_height), sim.world.width, sim.world.height, len(VIEWS))
+    drone_layer_scale = tile_size * SCALE_DOWN_FACTOR * TRAIL_SUPERSAMPLE
+    drone_layer = pygame.Surface((sim.world.width * drone_layer_scale, sim.world.height * drone_layer_scale), pygame.SRCALPHA)
 
     # ---------------- Bottom bar: Play, Step, Reset, Randomize, obstacle slider, then the tick counter
     button_h, gap = 20, 8
@@ -167,6 +178,8 @@ def main():
     pygame.mouse.set_visible(False)
     playing = False
     step_timer = 0.0
+    holding = False   # Space or the Step button is being held down
+    hold_time = 0.0   # how long it has been held
     drawn_version = None
     last_time = time.time()
 
@@ -186,13 +199,21 @@ def main():
                 if event.key == pygame.K_ESCAPE:
                     running = False
                 if event.key == pygame.K_SPACE:
-                    sim.step()
+                    if playing:
+                        playing = False
+                    else:
+                        sim.step()
+                        holding, hold_time, step_timer = True, 0.0, 0.0
+            if event.type == pygame.KEYUP and event.key == pygame.K_SPACE:
+                holding = False
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if play_button.hit((mx, my)):
                     playing = not playing and not sim.finished()
                     step_timer = 0.0
                 elif step_button.hit((mx, my)):
+                    playing = False
                     sim.step()
+                    holding, hold_time, step_timer = True, 0.0, 0.0
                 elif reset_button.hit((mx, my)):
                     sim.reset()
                     playing = False
@@ -203,13 +224,16 @@ def main():
                     slider.dragging = True
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 slider.dragging = False
+                holding = False
 
         # Dragging the slider changes the obstacles, which puts the drones back at the start
         if slider.dragging and sim.set_obstacle_rate(slider.drag_to(mx)):
             playing = False
 
-        # ---------------- Simulation: auto-step while playing
-        if playing:
+        # ---------------- Simulation: auto-step while playing, or once Space / Step has been held long enough
+        if holding:
+            hold_time += dt
+        if playing or (holding and hold_time >= HOLD_DELAY):
             step_timer += dt
             while step_timer >= 1 / STEPS_PER_SECOND:
                 step_timer -= 1 / STEPS_PER_SECOND
@@ -223,7 +247,7 @@ def main():
         if version != drawn_version:
             draw_grids(screen2, sim, tile_size, positions, font_small)
             pygame.transform.scale(screen2, screen.get_size(), screen2_scaled)
-            draw_drones(screen2_scaled, sim, tile_size, positions[0])
+            draw_drones(screen2_scaled, drone_layer, sim, tile_size, positions[0])
             drawn_version = version
 
         # ---------------- UI overlay (redrawn every frame)
@@ -233,10 +257,10 @@ def main():
         slider.draw(screenUI)
         drawText(screenUI, TEXT_COLOR, font_small, slider_label_x, text_y, f"obstacles {round(sim.obstacleRate * 100)}%")
         drawText(screenUI, TEXT_COLOR, font_small, status_x, text_y, f"tick {sim.tick}" + ("  done" if sim.finished() else ""))
-        drawText(screenUI, ACCENT_COLOR, font_regular, 5, screen_height - 30 / (SCALE_DOWN_FACTOR ** (1 / 1.8)),
+        drawText(screenUI, FPS_COLOR, font_regular, 5, screen_height - 30 / (SCALE_DOWN_FACTOR ** (1 / 1.8)),
                  str(round(clock.get_fps())), BACKGROUND_COLOR, 1, antiAliasing=False)
         pygame.draw.circle(screenUI, BACKGROUND_COLOR, (mx + 1, my + 1), 2, 1)
-        pygame.draw.circle(screenUI, ACCENT_COLOR, (mx, my), 2, 1)
+        pygame.draw.circle(screenUI, CURSOR_COLOR, (mx, my), 2, 1)
 
         screen.blit(screen2_scaled, (0, 0))
         screen.blit(pygame.transform.scale(screenUI, screen.get_size()), (0, 0))

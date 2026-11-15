@@ -1,3 +1,5 @@
+import math
+
 from palette import DRONE_COLORS
 
 NUM_DRONES = 4
@@ -5,11 +7,12 @@ SIGHT_RANGE = 1  # cells seen in every direction (including diagonals), plus the
 CORNER_RADIUS = 0.3  # how far along each cell a trail's corner starts curving, as a fraction of a cell
 
 
-def round_corners(points, radius, samples=5):
+def round_corners(points, radius, samples=8):
     """Replaces each sharp corner of a polyline with a short curve.
 
     The curve starts `radius` before the corner and ends `radius` after it.
-    Returns the new list of points.
+    Right-angle corners (every corner on a grid path) become true quarter
+    circles, so they all come out the same shape. Returns the new list of points.
     """
     if len(points) < 3:
         return list(points)
@@ -23,10 +26,16 @@ def round_corners(points, radius, samples=5):
         r = min(radius, la / 2, lb / 2)
         p1 = (p[0] + ax / la * r, p[1] + ay / la * r)
         p2 = (p[0] + bx / lb * r, p[1] + by / lb * r)
+        rightAngle = abs(ax * bx + ay * by) < 1e-9
+        cx, cy = p1[0] + p2[0] - p[0], p1[1] + p2[1] - p[1]  # centre of the quarter circle
         for i in range(samples + 1):
             t = i / samples
-            out.append(((1 - t) ** 2 * p1[0] + 2 * t * (1 - t) * p[0] + t * t * p2[0],
-                        (1 - t) ** 2 * p1[1] + 2 * t * (1 - t) * p[1] + t * t * p2[1]))
+            if rightAngle:
+                c, s = math.cos(t * math.pi / 2), math.sin(t * math.pi / 2)
+                out.append((cx + (p1[0] - cx) * c + (p2[0] - cx) * s, cy + (p1[1] - cy) * c + (p2[1] - cy) * s))
+            else:
+                out.append(((1 - t) ** 2 * p1[0] + 2 * t * (1 - t) * p[0] + t * t * p2[0],
+                            (1 - t) ** 2 * p1[1] + 2 * t * (1 - t) * p[1] + t * t * p2[1]))
     out.append(points[-1])
     return out
 
@@ -105,7 +114,11 @@ class Drone:
         if len(self.trail) < 2:
             return
         points = [self._cell_center(cell, origin, tile_size) for cell in self.trail]
-        pygame.draw.lines(surface, self.color, False, round_corners(points, tile_size * CORNER_RADIUS), width)
+        points = round_corners(points, tile_size * CORNER_RADIUS)
+        pygame.draw.lines(surface, self.color, False, points, width)
+        # A dot on every point fills the notches pygame leaves where thick segments meet at an angle
+        for point in points:
+            pygame.draw.circle(surface, self.color, point, width / 2)
 
     def draw(self, surface, origin, tile_size):
         """Draws the drone as a circle centred on its cell.
