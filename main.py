@@ -19,7 +19,7 @@ STEPS_PER_SECOND = 20   # auto-step speed while playing
 ALLOCATION_OPACITY = 0.6   # middle grid: how strongly a drone's colour tints its cells
 MAX_OBSTACLE_RATE = 0.2    # right-hand end of the obstacle slider
 OBSTACLE_RATE_STEP = 0.005 # the slider moves in steps of this size (0.5%)
-HOLD_DELAY = 0.2           # seconds Space or the Step button must be held before it starts ticking continuously
+HOLD_DELAY = 0.2           # seconds a step key or button must be held before it starts repeating
 TRAIL_SUPERSAMPLE = 3      # trails and drones are drawn this many times larger, then shrunk, to smooth their edges
 TRAIL_WIDTH = 1.5          # trail thickness, in scaled-down px
 TRAIL_OPACITY = 0.55       # how strongly a trail shows over the grid
@@ -165,24 +165,24 @@ def main():
     font_regular = fonts[f"regular{int(25 / (SCALE_DOWN_FACTOR ** (1 / 1.5)))}"]
     font_small = fonts[f"regular{int(18 / (SCALE_DOWN_FACTOR ** (1 / 1.5)))}"]
 
-    sim = Simulation()
+    sim = Simulation(keepHistory=True)
     tile_size, positions = layout_grids((screen_width, screen_height), sim.world.width, sim.world.height, len(VIEWS))
     drone_layer_scale = tile_size * SCALE_DOWN_FACTOR * TRAIL_SUPERSAMPLE
     drone_layer = pygame.Surface((sim.world.width * drone_layer_scale, sim.world.height * drone_layer_scale)).convert()
     trail_layer = drone_layer.copy()
 
-    # ---------------- Bottom bar: Play, Step, Reset, Randomize, obstacle slider, then the tick counter
+    # ---------------- Bottom bar: Play, Back, Step, Reset, Randomize, obstacle slider, then the tick counter
     button_h, gap = 20, 8
-    widths = [52, 52, 52, 76]
+    widths = [52, 52, 52, 52, 76]
     slider_w, slider_label_w, status_w = 90, 96, 60
     bar_w = sum(widths) + gap * len(widths) + slider_w + gap + slider_label_w + status_w
     x = (screen_width - bar_w) // 2
     bar_y = screen_height - BAR_H + (BAR_H - button_h) // 2 - 4
     buttons = []
-    for label, w in zip(["Play", "Step", "Reset", "Randomize"], widths):
+    for label, w in zip(["Play", "Back", "Step", "Reset", "Randomize"], widths):
         buttons.append(Button((x, bar_y, w, button_h), label))
         x += w + gap
-    play_button, step_button, reset_button, randomize_button = buttons
+    play_button, back_button, step_button, reset_button, randomize_button = buttons
     slider = Slider((x + 4, bar_y, slider_w, button_h), sim.obstacleRate, MAX_OBSTACLE_RATE, OBSTACLE_RATE_STEP)
     slider_label_x = slider.rect.right + gap + 4
     status_x = slider_label_x + slider_label_w
@@ -191,8 +191,8 @@ def main():
     pygame.mouse.set_visible(False)
     playing = False
     step_timer = 0.0
-    holding = False   # Space or the Step button is being held down
-    hold_time = 0.0   # how long it has been held
+    held_action = None  # sim.step or sim.step_back while its key or button is held down
+    hold_time = 0.0     # how long it has been held
     drawn_version = None
     last_time = time.time()
 
@@ -211,22 +211,24 @@ def main():
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
-                if event.key == pygame.K_SPACE:
-                    if playing:
-                        playing = False
-                    else:
-                        sim.step()
-                        holding, hold_time, step_timer = True, 0.0, 0.0
-            if event.type == pygame.KEYUP and event.key == pygame.K_SPACE:
-                holding = False
+                if event.key == pygame.K_SPACE and playing:
+                    playing = False
+                elif event.key in (pygame.K_SPACE, pygame.K_RIGHT, pygame.K_LEFT):
+                    playing = False
+                    held_action = sim.step_back if event.key == pygame.K_LEFT else sim.step
+                    held_action()
+                    hold_time, step_timer = 0.0, 0.0
+            if event.type == pygame.KEYUP and event.key in (pygame.K_SPACE, pygame.K_RIGHT, pygame.K_LEFT):
+                held_action = None
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if play_button.hit((mx, my)):
                     playing = not playing and not sim.finished()
                     step_timer = 0.0
-                elif step_button.hit((mx, my)):
+                elif step_button.hit((mx, my)) or back_button.hit((mx, my)):
                     playing = False
-                    sim.step()
-                    holding, hold_time, step_timer = True, 0.0, 0.0
+                    held_action = sim.step if step_button.hit((mx, my)) else sim.step_back
+                    held_action()
+                    hold_time, step_timer = 0.0, 0.0
                 elif reset_button.hit((mx, my)):
                     sim.reset()
                     playing = False
@@ -237,20 +239,20 @@ def main():
                     slider.dragging = True
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 slider.dragging = False
-                holding = False
+                held_action = None
 
         # Dragging the slider changes the obstacles, which puts the drones back at the start
         if slider.dragging and sim.set_obstacle_rate(slider.drag_to(mx)):
             playing = False
 
-        # ---------------- Simulation: auto-step while playing, or once Space / Step has been held long enough
-        if holding:
+        # ---------------- Simulation: auto-step while playing, or repeat a step once it has been held long enough
+        if held_action:
             hold_time += dt
-        if playing or (holding and hold_time >= HOLD_DELAY):
+        if playing or (held_action and hold_time >= HOLD_DELAY):
             step_timer += dt
             while step_timer >= 1 / STEPS_PER_SECOND:
                 step_timer -= 1 / STEPS_PER_SECOND
-                sim.step()
+                (held_action or sim.step)()
             if sim.finished():
                 playing = False
         play_button.label = "Pause" if playing else "Play"

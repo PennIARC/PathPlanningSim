@@ -1,4 +1,5 @@
 """The simulation itself, with no drawing. Run `python3 Sim.py` to run it headless to the end."""
+import copy
 import random
 
 from Drones import NUM_DRONES, spawn_drones
@@ -8,8 +9,9 @@ OBSTACLE_RATE = 0.08  # fraction of the real map's cells that are obstacles
 
 
 class Simulation:
-    def __init__(self, numDrones=NUM_DRONES, obstacleRate=OBSTACLE_RATE, seed=None):
+    def __init__(self, numDrones=NUM_DRONES, obstacleRate=OBSTACLE_RATE, seed=None, keepHistory=False):
         self.numDrones = numDrones
+        self.keepHistory = keepHistory  # snapshot every tick so step_back() works; costs a few ms per tick
         self.obstacleRate = obstacleRate
         self.seed = random.randrange(1_000_000) if seed is None else seed
         self.version = 0  # goes up whenever anything changes, so the visualizer knows when to redraw
@@ -23,6 +25,7 @@ class Simulation:
         self.drones = spawn_drones(self.world, self.knownObstacles, self.numDrones)
         self.planner = Planner(self.liveMap, self.drones, self.knownObstacles)
         self.tick = 0
+        self.history = []  # one snapshot per tick taken so far, so step_back() can undo them
         self.place_obstacles()
         self.planner.assign()
         self.sense()
@@ -73,6 +76,9 @@ class Simulation:
         """
         if self.finished():
             return False
+        if self.keepHistory:
+            # Copied together so the drones in the snapshot still share one obstacle set
+            self.history.append(copy.deepcopy((self.liveMap, self.knownObstacles, self.drones)))
         moving = self.planner.resolve_moves()
         for drone in self.drones:
             drone.ticksSinceProgress += 1
@@ -83,6 +89,16 @@ class Simulation:
         self.sense()
         self.planner.plan()
         self.tick += 1
+        self.version += 1
+        return True
+
+    def step_back(self):
+        """Undoes the last tick. Needs keepHistory=True. Returns False if there is nothing to undo."""
+        if not self.history:
+            return False
+        self.liveMap, self.knownObstacles, self.drones = self.history.pop()
+        self.planner = Planner(self.liveMap, self.drones, self.knownObstacles)
+        self.tick -= 1
         self.version += 1
         return True
 
