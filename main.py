@@ -85,19 +85,22 @@ def draw_grids(surface, sim, tile_size, positions, font):
 def draw_drones(surface, layer, sim, tile_size, position):
     """Draws trails and drones over the left grid of the full-size surface.
 
-    They are drawn oversized onto `layer` and shrunk with smoothing, which
-    anti-aliases them so every curved corner looks the same.
+    The grid is copied onto `layer` enlarged, the trails and drones are drawn
+    on top, and the result is shrunk back with smoothing. That anti-aliases
+    them so every curved corner looks the same. The layer is opaque on purpose:
+    a transparent one comes out solid white on the macOS display.
     """
     scale = SCALE_DOWN_FACTOR * TRAIL_SUPERSAMPLE
-    layer.fill((0, 0, 0, 0))
+    size = (layer.get_width() // TRAIL_SUPERSAMPLE, layer.get_height() // TRAIL_SUPERSAMPLE)
+    area = pygame.Rect((position[0] * SCALE_DOWN_FACTOR, position[1] * SCALE_DOWN_FACTOR), size)
+    pygame.transform.scale(surface.subsurface(area), layer.get_size(), layer)
     # Cell centres are offset by half the gap, since each cell is drawn one gap short of its tile
     origin = (-TILE_GAP / 2 * scale, -TILE_GAP / 2 * scale)
     for drone in sim.drones:
         drone.draw_trail(layer, origin, tile_size * scale, width=scale)
     for drone in sim.drones:
         drone.draw(layer, origin, tile_size * scale)
-    size = (layer.get_width() // TRAIL_SUPERSAMPLE, layer.get_height() // TRAIL_SUPERSAMPLE)
-    surface.blit(pygame.transform.smoothscale(layer, size), (position[0] * SCALE_DOWN_FACTOR, position[1] * SCALE_DOWN_FACTOR))
+    surface.blit(pygame.transform.smoothscale(layer, size), area)
 
 
 class Button:
@@ -156,7 +159,7 @@ def main():
     sim = Simulation()
     tile_size, positions = layout_grids((screen_width, screen_height), sim.world.width, sim.world.height, len(VIEWS))
     drone_layer_scale = tile_size * SCALE_DOWN_FACTOR * TRAIL_SUPERSAMPLE
-    drone_layer = pygame.Surface((sim.world.width * drone_layer_scale, sim.world.height * drone_layer_scale), pygame.SRCALPHA)
+    drone_layer = pygame.Surface((sim.world.width * drone_layer_scale, sim.world.height * drone_layer_scale)).convert()
 
     # ---------------- Bottom bar: Play, Step, Reset, Randomize, obstacle slider, then the tick counter
     button_h, gap = 20, 8
