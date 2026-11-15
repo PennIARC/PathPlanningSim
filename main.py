@@ -20,8 +20,9 @@ ALLOCATION_OPACITY = 0.6   # middle grid: how strongly a drone's colour tints it
 VISIT_OUTLINE = 2          # middle grid: thickness in scaled-down px of the outline a visiting drone leaves on a cell
 MAX_OBSTACLE_RATE = 0.2    # right-hand end of the obstacle slider
 OBSTACLE_RATE_STEP = 0.005 # the slider moves in steps of this size (0.5%)
-MAX_CLUSTER_BIAS = 10.0    # right-hand end of the clustering slider
-CLUSTER_BIAS_STEP = 0.5
+MAX_CLUSTER_WEIGHT = 10.0  # right-hand end of the clustering slider; its left-hand end is 1x (no clustering)
+CLUSTER_WEIGHT_STEP = 0.5
+MAX_OBSTACLE_ROUNDS = 8    # right-hand end of the rounds slider; its left-hand end is 1 round
 HOLD_DELAY = 0.2           # seconds a step key or button must be held before it starts repeating
 TRAIL_SUPERSAMPLE = 2      # trails and drones are drawn this many times larger, then shrunk, to smooth their edges
 TRAIL_WIDTH = 1.5          # trail thickness, in scaled-down px
@@ -154,13 +155,20 @@ class Button:
 
 
 class Slider:
-    """Horizontal slider. `value` runs from 0 at the left end to max_value at the right end, in multiples of step."""
+    """Horizontal slider. `value` runs from min_value at the left end to max_value at the right, in multiples of step.
 
-    def __init__(self, rect, value, max_value, step):
+    `apply(value)` is called while dragging and returns True if the value changed something;
+    `label()` gives the text shown to the right of the slider.
+    """
+
+    def __init__(self, rect, value, min_value, max_value, step, apply, label):
         self.rect = pygame.Rect(rect)
         self.value = value
+        self.min_value = min_value
         self.max_value = max_value
         self.step = step
+        self.apply = apply
+        self.label = label
         self.dragging = False
 
     def hit(self, pos):
@@ -169,12 +177,13 @@ class Slider:
     def drag_to(self, x):
         """Moves the handle to pixel x. Returns the new value."""
         fraction = max(0.0, min(1.0, (x - self.rect.left) / self.rect.width))
-        self.value = round(fraction * self.max_value / self.step) * self.step
+        span = self.max_value - self.min_value
+        self.value = self.min_value + round(fraction * span / self.step) * self.step
         return self.value
 
     def draw(self, surface):
         track_y = self.rect.centery
-        handle_x = self.rect.left + self.rect.width * self.value / self.max_value
+        handle_x = self.rect.left + self.rect.width * (self.value - self.min_value) / (self.max_value - self.min_value)
         pygame.draw.line(surface, BUTTON_HOVER_COLOR, (self.rect.left, track_y), (self.rect.right, track_y), 2)
         pygame.draw.line(surface, TEXT_COLOR, (self.rect.left, track_y), (handle_x, track_y), 2)
         pygame.draw.circle(surface, SLIDER_HANDLE_COLOR, (handle_x, track_y), 4)
@@ -199,11 +208,20 @@ def main():
     drone_layer = pygame.Surface((sim.world.width * drone_layer_scale, sim.world.height * drone_layer_scale)).convert()
     trail_layer = drone_layer.copy()
 
-    # ---------------- Bottom bar: Play, Back, Step, Reset, Randomize, the two obstacle sliders, then the tick counter
-    button_h, gap = 20, 8
-    widths = [52, 52, 52, 52, 76]
-    slider_w, slider_label_w, status_w = 70, 92, 60
-    bar_w = sum(widths) + gap * len(widths) + 2 * (slider_w + gap + 4 + slider_label_w) + status_w
+    # ---------------- Bottom bar: Play, Back, Step, Reset, Randomize, the three obstacle sliders, then the tick counter
+    button_h, gap = 20, 6
+    widths = [44, 44, 44, 46, 74]
+    slider_w, status_w = 56, 60
+    # (start value, left end, right end, step, what to call while dragging, label text, label width)
+    slider_specs = [
+        (sim.obstacleRate, 0.0, MAX_OBSTACLE_RATE, OBSTACLE_RATE_STEP, sim.set_obstacle_rate,
+         lambda: f"obstacles {sim.obstacleRate * 100:.1f}%", 90),
+        (sim.clusterWeight, 1.0, MAX_CLUSTER_WEIGHT, CLUSTER_WEIGHT_STEP, sim.set_cluster_weight,
+         lambda: f"clustering {sim.clusterWeight:.1f}x", 82),
+        (sim.obstacleRounds, 1, MAX_OBSTACLE_ROUNDS, 1, sim.set_obstacle_rounds,
+         lambda: f"rounds {sim.obstacleRounds}", 52),
+    ]
+    bar_w = sum(widths) + gap * len(widths) + sum(slider_w + gap + 10 + spec[-1] for spec in slider_specs) + status_w
     x = (screen_width - bar_w) // 2
     bar_y = screen_height - BAR_H + (BAR_H - button_h) // 2 - 4
     buttons = []
@@ -211,11 +229,12 @@ def main():
         buttons.append(Button((x, bar_y, w, button_h), label))
         x += w + gap
     play_button, back_button, step_button, reset_button, randomize_button = buttons
-    rate_slider = Slider((x + 4, bar_y, slider_w, button_h), sim.obstacleRate, MAX_OBSTACLE_RATE, OBSTACLE_RATE_STEP)
-    rate_label_x = rate_slider.rect.right + gap + 4
-    bias_slider = Slider((rate_label_x + slider_label_w, bar_y, slider_w, button_h), sim.clusterBias, MAX_CLUSTER_BIAS, CLUSTER_BIAS_STEP)
-    bias_label_x = bias_slider.rect.right + gap + 4
-    status_x = bias_label_x + slider_label_w
+    sliders = []  # (slider, x of its label)
+    for value, low, high, step, apply, label, label_w in slider_specs:
+        slider = Slider((x + 6, bar_y, slider_w, button_h), value, low, high, step, apply, label)
+        sliders.append((slider, slider.rect.right + gap + 2))
+        x = slider.rect.right + gap + 4 + label_w
+    status_x = x
     text_y = bar_y + (button_h - font_small.get_height()) / 2
 
     pygame.mouse.set_visible(False)
@@ -265,19 +284,18 @@ def main():
                 elif randomize_button.hit((mx, my)):
                     sim.randomize()
                     playing = False
-                elif rate_slider.hit((mx, my)):
-                    rate_slider.dragging = True
-                elif bias_slider.hit((mx, my)):
-                    bias_slider.dragging = True
+                else:
+                    for slider, _ in sliders:
+                        slider.dragging = slider.hit((mx, my))
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                rate_slider.dragging = bias_slider.dragging = False
+                for slider, _ in sliders:
+                    slider.dragging = False
                 held_action = None
 
-        # Dragging either slider changes the obstacles, which puts the drones back at the start
-        if rate_slider.dragging and sim.set_obstacle_rate(rate_slider.drag_to(mx)):
-            playing = False
-        if bias_slider.dragging and sim.set_cluster_bias(bias_slider.drag_to(mx)):
-            playing = False
+        # Dragging a slider changes the obstacles, which puts the drones back at the start
+        for slider, _ in sliders:
+            if slider.dragging and slider.apply(slider.drag_to(mx)):
+                playing = False
 
         # ---------------- Simulation: auto-step while playing, or repeat a step once it has been held long enough
         if held_action:
@@ -303,10 +321,9 @@ def main():
         screenUI.fill((0, 0, 0, 0))
         for button in buttons:
             button.draw(screenUI, font_small, (mx, my))
-        rate_slider.draw(screenUI)
-        bias_slider.draw(screenUI)
-        drawText(screenUI, TEXT_COLOR, font_small, rate_label_x, text_y, f"obstacles {sim.obstacleRate * 100:.1f}%")
-        drawText(screenUI, TEXT_COLOR, font_small, bias_label_x, text_y, f"clustering {sim.clusterBias:.1f}")
+        for slider, label_x in sliders:
+            slider.draw(screenUI)
+            drawText(screenUI, TEXT_COLOR, font_small, label_x, text_y, slider.label())
         drawText(screenUI, TEXT_COLOR, font_small, status_x, text_y, f"tick {sim.tick}" + ("  done" if sim.finished() else ""))
         drawText(screenUI, FPS_COLOR, font_regular, 5, screen_height - 30 / (SCALE_DOWN_FACTOR ** (1 / 1.8)),
                  str(round(clock.get_fps())), BACKGROUND_COLOR, 1, antiAliasing=False)

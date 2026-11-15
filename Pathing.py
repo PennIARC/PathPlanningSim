@@ -104,11 +104,13 @@ class Planner:
     Each drone sweeps its strip row by row from the bottom (the bous sweep).
     `targets` is the set of its own cells still to fly over and `stops` is an
     ordered list of cells it took over from other drones, which come first.
-    Whenever it needs somewhere to go it heads for whichever end of the
-    unvisited cells in its current row is closer, so it sweeps a row from
-    either side. `route` is the cell-by-cell way there, found with A* around
-    every obstacle any drone has seen. Obstacle cells are dropped as they are
-    discovered.
+    Whenever it needs somewhere to go it scores the ends of every unbroken run
+    of unvisited cells: A* steps to get there, plus CLIMB_COST for each row the
+    end is above the drone. The cheapest end wins. So it sweeps a row from
+    whichever side is nearer, finishes what is at or below it before moving
+    up, and does not shuttle around a wall to keep rows in strict order.
+    `route` is the cell-by-cell way there, found with A* around every obstacle
+    any drone has seen. Obstacle cells are dropped as they are discovered.
 
     A route longer than one step is a detour, and it may cross cells that
     belong to another drone. For each such cell:
@@ -123,6 +125,7 @@ class Planner:
     REROUTE_AFTER = 2  # ticks a drone that has to give way waits behind another drone before finding a way round it
     GIVE_UP_AFTER = 8  # ticks blocked with no way round before the cell it was heading for is skipped
     STALL_FACTOR = 3   # a cell not reached within this many times (width + height) ticks is skipped
+    CLIMB_COST = 6     # extra steps a drone will fly to finish cells at or below its row before moving up one row
 
     def __init__(self, grid, drones, obstacles):
         self.grid = grid            # the live map; holds which drone each cell is assigned to
@@ -153,6 +156,7 @@ class Planner:
             changedOthers = False
             for drone in self.drones:
                 changedOthers |= self._plan_drone(drone)
+            changedOthers |= self._settle_head_ons()
             if not changedOthers:
                 break
 
@@ -188,10 +192,11 @@ class Planner:
     def _next_leg(self, position, stops, targets):
         """Picks the next cell to head for and returns the A* route to it; [] if there is nowhere left to go.
 
-        Stops come first, in order. After that the goal is one end of the
-        unvisited cells in the lowest unfinished row: whichever end is fewer
-        steps away (the left one on a tie). Cells that cannot be reached at all
-        are removed from `stops` / `targets` as they are found.
+        Stops come first, in order. After that the goal is the cheapest end of
+        any unbroken run of unvisited cells in a row, where the cost is the A*
+        steps to reach it plus CLIMB_COST per row it lies above the drone.
+        Ends that cannot be reached at all are removed from `stops` /
+        `targets` as they are found.
         """
         while stops:
             route = astar(self.grid, position, stops[0], self.obstacles)
@@ -199,21 +204,45 @@ class Planner:
                 return route
             stops.pop(0)
         while targets:
-            row = max(y for _, y in targets)
-            xs = [x for x, y in targets if y == row]
-            ends = [(min(xs), row), (max(xs), row)]
-            if ends[0] == ends[1]:
-                ends.pop()
-            routes = []
-            for end in ends:
+            # Try ends in order of the least they could possibly cost, and stop once no later one can win
+            ordered = sorted((self._straight_steps(position, end) + self._climb(position, end), end) for end in self._run_ends(targets))
+            best = None
+            for leastCost, end in ordered:
+                if best is not None and leastCost >= best[0]:
+                    break
                 route = astar(self.grid, position, end, self.obstacles)
-                if route:
-                    routes.append(route)
-                else:
+                if not route:
                     targets.discard(end)  # walled in by known obstacles: skip it
-            if routes:
-                return min(routes, key=len)
+                    continue
+                cost = len(route) + self._climb(position, end)
+                if best is None or cost < best[0]:
+                    best = (cost, route)
+            if best is not None:
+                return best[1]
         return []
+
+    @staticmethod
+    def _straight_steps(a, b):
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    def _climb(self, position, cell):
+        return self.CLIMB_COST * max(0, position[1] - cell[1])  # rows go up the field as y gets smaller
+
+    @staticmethod
+    def _run_ends(targets):
+        """Both ends of every unbroken left-to-right run of cells in `targets`."""
+        rows = collections.defaultdict(list)
+        for x, y in targets:
+            rows[y].append(x)
+        ends = set()
+        for y, xs in rows.items():
+            xs.sort()
+            for i, x in enumerate(xs):
+                if i == 0 or xs[i - 1] != x - 1:
+                    ends.add((x, y))
+                if i == len(xs) - 1 or xs[i + 1] != x + 1:
+                    ends.add((x, y))
+        return ends
 
     def _set_route(self, drone, route):
         """Returns True if the new route took cells from another drone."""
@@ -248,13 +277,42 @@ class Planner:
             drone.detouring = True
             return changedOthers
 
-        # No way round, e.g. a one-cell-wide gap: the drone giving way backs out to let the other through
-        if blocker is not None and not parked and drone.yielding and self._make_way(drone, blocker):
-            return False
+        # No way round, e.g. a one-cell-wide gap: the drone giving way backs out to let the other through.
+        # If it is boxed in with nowhere to back out to, the other drone moves aside for it instead.
+        if blocker is not None and not parked and drone.yielding:
+            if self._make_way(drone, blocker) or self._make_way(blocker, drone):
+                drone.blockedTicks = 0
+                return False
         if parked or drone.blockedTicks >= self.GIVE_UP_AFTER:
             self._drop(drone, goal)
             return self._route_to_next_goal(drone)
         return False  # nowhere to go yet: keep waiting
+
+    def _settle_head_ons(self):
+        """Sorts out pairs of drones about to fly into each other, before either loses a tick waiting.
+
+        The one without right of way goes round the other if it can, else backs
+        out of its way, else (boxed in) the other backs out instead. Returns
+        True if any plan changed.
+        """
+        changed = False
+        for a in self.drones:
+            for b in self.drones:
+                headOn = a.index < b.index and a.route and b.route and a.route[0] == b.position and b.route[0] == a.position
+                if not headOn:
+                    continue
+                first, second = sorted((a, b), key=lambda d: (d.detouring, d.index))  # `first` has right of way
+                if second.makingWay or first.makingWay:
+                    continue
+                goal = second.route[-1]
+                route = astar(self.grid, second.position, goal, self.obstacles | {first.position}) if goal != first.position else None
+                if route:
+                    self._set_route(second, route)
+                    second.detouring = True
+                    changed = True
+                elif self._make_way(second, first) or self._make_way(first, second):
+                    changed = True
+        return changed
 
     def _make_way(self, mover, other):
         """Sends `mover` to the nearest free cell that is off `other`'s route. Returns False if there is none."""

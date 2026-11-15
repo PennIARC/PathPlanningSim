@@ -2,17 +2,21 @@
 import random
 
 from Drones import NUM_DRONES, spawn_drones
-from Pathing import NEIGHBOURS, Grid, Planner
+from Pathing import GRID_HEIGHT, GRID_WIDTH, NEIGHBOURS, Grid, Planner
 
 OBSTACLE_RATE = 0.08  # fraction of the real map's cells that are obstacles
-OBSTACLE_TURNS = 3    # obstacles are placed in this many rounds; from the second round on they favour existing ones
-CLUSTER_BIAS = 2.0    # extra weight for a cell next to an obstacle in those later rounds (0 = no clustering)
+OBSTACLE_ROUNDS = 3   # obstacles are placed in this many rounds; from the second round on they favour existing ones
+CLUSTER_WEIGHT = 3.0  # in those later rounds a cell next to an obstacle is this many times as likely (1 = no clustering)
 
 
 class Simulation:
-    def __init__(self, numDrones=NUM_DRONES, obstacleRate=OBSTACLE_RATE, clusterBias=CLUSTER_BIAS, seed=None, keepHistory=False):
+    def __init__(self, numDrones=NUM_DRONES, obstacleRate=OBSTACLE_RATE, clusterWeight=CLUSTER_WEIGHT,
+                 obstacleRounds=OBSTACLE_ROUNDS, seed=None, keepHistory=False, width=None, height=None, obstacles=None):
         self.numDrones = numDrones
-        self.clusterBias = clusterBias
+        self.clusterWeight = clusterWeight
+        self.obstacleRounds = obstacleRounds
+        self.size = (width or GRID_WIDTH, height or GRID_HEIGHT)
+        self.fixedObstacles = obstacles  # explicit list of (x, y) obstacle cells; None means place them at random
         self.keepHistory = keepHistory  # snapshot every tick so step_back() works; costs a few ms per tick
         self.obstacleRate = obstacleRate
         self.seed = random.randrange(1_000_000) if seed is None else seed
@@ -21,8 +25,8 @@ class Simulation:
 
     def reset(self):
         """Back to tick 0 on the same obstacle layout."""
-        self.world = Grid()    # the real map, including obstacles the drones have not found yet
-        self.liveMap = Grid()  # what the drones know so far, plus which drone each cell is assigned to
+        self.world = Grid(*self.size)    # the real map, including obstacles the drones have not found yet
+        self.liveMap = Grid(*self.size)  # what the drones know so far, plus which drone each cell is assigned to
         self.knownObstacles = set()  # (x, y) obstacle cells seen so far, shared by every drone
         self.cellPasses = {}         # (cell, cell) -> times any drone has flown between them, shared by every drone
         self.drones = spawn_drones(self.world, self.knownObstacles, self.cellPasses, self.numDrones)
@@ -54,12 +58,21 @@ class Simulation:
         self.randomize()
         return True
 
-    def set_cluster_bias(self, bias):
+    def set_cluster_weight(self, weight):
         """Changes how strongly obstacles clump together, with a fresh random layout, and resets. False if unchanged."""
-        bias = max(0.0, bias)
-        if bias == self.clusterBias:
+        weight = max(1.0, weight)
+        if weight == self.clusterWeight:
             return False
-        self.clusterBias = bias
+        self.clusterWeight = weight
+        self.randomize()
+        return True
+
+    def set_obstacle_rounds(self, rounds):
+        """Changes how many rounds the obstacles are placed in, with a fresh random layout, and resets. False if unchanged."""
+        rounds = max(1, int(round(rounds)))
+        if rounds == self.obstacleRounds:
+            return False
+        self.obstacleRounds = rounds
         self.randomize()
         return True
 
@@ -68,26 +81,30 @@ class Simulation:
         return round(rate * self.world.width * self.world.height)
 
     def place_obstacles(self):
-        """Places the obstacles in OBSTACLE_TURNS rounds.
+        """Places the obstacles in `obstacleRounds` rounds.
 
         The first round is uniformly random. In each later round a free cell
         directly left, right, above or below an existing obstacle is
-        (1 + clusterBias) times as likely to be picked as any other, so
-        obstacles tend to form clusters.
+        `clusterWeight` times as likely to be picked as any other, so
+        obstacles tend to form clusters. More rounds let clusters grow further.
         """
+        if self.fixedObstacles is not None:
+            for x, y in self.fixedObstacles:
+                self.world.set_cell(x, y, isObstacle=True)
+            return
         # Seeded, so reset() rebuilds the same layout until randomize() picks a new seed
         rng = random.Random(self.seed)
         spawnCells = {d.position for d in self.drones}
         free = [(x, y) for y in range(self.world.height) for x in range(self.world.width) if (x, y) not in spawnCells]
         total = min(self.obstacle_count(), len(free))
         obstacles = set()
-        for turn in range(OBSTACLE_TURNS):
-            count = total // OBSTACLE_TURNS + (1 if turn < total % OBSTACLE_TURNS else 0)
+        for turn in range(self.obstacleRounds):
+            count = total // self.obstacleRounds + (1 if turn < total % self.obstacleRounds else 0)
             candidates = [c for c in free if c not in obstacles]
 
             def weight(cell):
                 nextToObstacle = any((cell[0] + dx, cell[1] + dy) in obstacles for dx, dy in NEIGHBOURS)
-                return 1 + self.clusterBias if nextToObstacle else 1
+                return self.clusterWeight if nextToObstacle else 1
 
             # Weighted pick without repeats: give each cell a random score that favours heavier cells, keep the top ones
             scored = sorted(candidates, key=lambda cell: rng.random() ** (1 / weight(cell)), reverse=True)
