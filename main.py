@@ -1,4 +1,7 @@
 import argparse
+import ctypes
+import glob
+import os
 import time
 
 import pygame
@@ -11,6 +14,8 @@ from fontDict import fonts
 
 # ---------------- Configuration
 FPS = 60
+WINDOW_AREA = 0.95      # share of the free screen area (not under the menu bar or dock) the window fills
+TITLE_BAR_H = 28        # px the window's own title bar takes on macOS, counted as part of the window
 SCALE_DOWN_FACTOR = 2   # draw at 1/2 resolution and scale up, as in GridTesting
 PADDING = 20            # px (in scaled-down space) kept clear around each grid
 TITLE_H = 16            # px above each grid for its title
@@ -190,9 +195,39 @@ class Slider:
         pygame.draw.circle(surface, SLIDER_HANDLE_COLOR, (handle_x, track_y), 4)
 
 
+def free_screen_rect():
+    """(x, y, width, height) of the screen area a window can use: everything but the menu bar and dock.
+
+    pygame does not report this, so it is asked of the SDL library pygame ships
+    with. If that fails the whole screen is returned.
+    """
+    width, height = pygame.display.get_desktop_sizes()[0]
+    try:
+        folder = os.path.dirname(pygame.__file__)
+        library = (glob.glob(os.path.join(folder, ".dylibs", "libSDL2-2*.dylib")) + glob.glob(os.path.join(folder, "SDL2.dll"))
+                   + glob.glob(os.path.join(folder, "..", "pygame.libs", "libSDL2-2*.so*")))[0]
+        bounds = (ctypes.c_int * 4)()  # an SDL_Rect: x, y, w, h
+        if ctypes.CDLL(library).SDL_GetDisplayUsableBounds(0, bounds) == 0 and bounds[2] > 0 and bounds[3] > 0:
+            return tuple(bounds)
+    except Exception:
+        pass
+    return 0, 0, width, height
+
+
+def open_window():
+    """Opens a normal window, centred, that fills WINDOW_AREA of the free screen area, title bar included."""
+    x, y, width, height = free_screen_rect()
+    side = WINDOW_AREA ** 0.5  # shrinking both sides by this much shrinks the area by WINDOW_AREA
+    frame_w, frame_h = int(width * side), int(height * side)
+    left, top = x + (width - frame_w) // 2, y + (height - frame_h) // 2 + TITLE_BAR_H
+    os.environ["SDL_VIDEO_WINDOW_POS"] = f"{left},{top}"
+    pygame.display.set_caption("Path planning")
+    return pygame.display.set_mode((frame_w, frame_h - TITLE_BAR_H))
+
+
 def main():
     pygame.init()
-    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    screen = open_window()
     clock = pygame.time.Clock()
 
     screen_width = int(screen.get_width() / SCALE_DOWN_FACTOR)
