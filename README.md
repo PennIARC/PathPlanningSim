@@ -33,7 +33,9 @@ The field is cut into one vertical column per drone. Each drone sweeps its colum
 - A drone making a single step along its sweep goes before a detouring one. Ties go to the lower drone index.
 - Drones start side by side at the bottom centre. The walk to their own column never reassigns cells.
 - Before moving up a row, a drone checks for cells it skipped lower down. If the shortest route to one runs only through cells already seen, and the trip is no longer than the rows it still has to climb, it goes back for it then instead of at the end.
-- Every 5 ticks the work is shared out. If two neighbours' remaining work differs by more than 10 cells, the lighter one takes a one-cell strip of the other's column in the rows above them both.
+- Before moving up a row, a drone also checks whether another drone is closer to the cells it is leaving behind. Each connected group of them goes to whichever drone has the shortest trip to it. Unseen cells count as free in that trip, so the owner keeps the cells while a way in may still exist.
+- Every tick the work is shared out. If two neighbours' remaining work differs by more than one cell, the lighter one takes half the difference from the edge of the other's column, furthest up the field first.
+- Among equally short routes, a drone takes the one over the most cells that another drone has flown and it has not, so a second pair of eyes sees them.
 - A drone that finishes takes over the cells the busiest drone would reach last, as many as it can finish by the time that drone is done. If nobody needs help it waits in its last cell.
 
 ## Parameters
@@ -48,10 +50,11 @@ Every number the planner depends on, all in `Planner` in `Pathing.py`, and where
 | `STALL_FACTOR` | 3 | A drone that goes `STALL_FACTOR x (width + height)` ticks without ticking off a cell drops the one it is heading for. | Picked as a safety net. On the 30 x 60 field the limit is 270 ticks, far longer than any real detour. It has never triggered in testing. |
 | Prediction horizon | length of the detour | How far ahead a neighbour's movements are played forward when deciding who reaches a shared cell first. | Derived. Anything the neighbour would reach later than the detouring drone counts as "later" anyway. |
 | `BACKTRACK_WEIGHT` | 1.0 | A drone about to move up goes back for a skipped cell if the trip is at most this many times the rows it still has to climb. 0 switches the behaviour off. | Derived, then checked. Going back now costs about two trips; leaving the cell to the end costs about one trip plus the rows left to climb, so the break-even is 1. Measured: 0 was 4% slower on random maps and up to 10% on maps with a walled-off area; 0.5 to 2.5 were within noise of each other. |
-| `REBALANCE_EVERY` | 5 ticks | How often work is shared out between drones. 0 switches sharing off. | Picked to keep the check cheap; it does not matter. Checking every 1, 2, 5, 10, 20 or 50 ticks finished within noise of each other on five kinds of map (30 maps each), from open field to 30% clustered obstacles. Switching sharing off was 4 to 5% slower on all of them. |
-| `REBALANCE_GAP` | 10 cells | Two neighbours' remaining work must differ by more than this before a strip of cells moves between them. | Picked. 4, 10, 20 and 40 finished within noise of each other. |
+| `REBALANCE_EVERY` | 1 tick | How often work is shared out between drones. 0 switches sharing off. | Chosen for consistency with the rest of the planner, which re-plans every tick. It does not matter for speed: intervals of 1, 2, 5, 10, 20 and 50 ticks finished within noise of each other on five kinds of map (30 maps each), and switching sharing off was 3 to 5% slower. |
+| `REBALANCE_GAP` | 1 cell | Two neighbours' remaining work must differ by more than this before cells move between them. Half the difference moves. | Chosen to keep the loads as even as possible, against the measurement. Thresholds of 1, 4 and 10 finished default maps in 488, 484 and 483 ticks on average (30 maps), and dense maps in 527, 523 and 516. At 1, cells change hands about 400 times a run on a default map; at 10, about 17. |
 | `HELP_MIN` | 6 cells | A finished drone only helps a drone with at least this many cells left. | Picked. 2, 6 and 20 finished within noise of each other. |
-| Tie-breaks | left, lower index | Two equally cheap cells: the left one. Two drones with equal right of way: the lower index. | Picked, so that runs are repeatable. |
+| `HANDOVER_WEIGHT` | 1.0 | Cells a drone is leaving behind go to another drone if that drone's trip to them, times this, is shorter than the owner's. 0 switches handing over off. | Picked as the plain comparison, then checked. 0.75, 1, 1.5 and 2 finished default maps within a tick of each other. Switching it off makes no difference on default maps and is 1.6% slower on dense, clustered maps and 3% slower on very dense ones. |
+| Tie-breaks | new eyes, left, lower index | Two equally short routes: the one over more cells that only other drones have flown. Two equally cheap cells: the left one. Two drones with equal right of way: the lower index. | Picked. The first gives a cell a second look for free; the others make runs repeatable. |
 
 ## Edge cases
 
@@ -79,9 +82,9 @@ Yellow flies straight through the two swept cells and nothing changes hands. The
 
 ![same tick](docs/edge_cases/same_tick.png)
 
-Green is crossing yellow's column to get round a cluster of obstacles, and would arrive at one of yellow's cells on the tick yellow is due there.
+Yellow is crossing green's column to get round obstacles, and would arrive at one of green's cells on the tick green is due there.
 
-The cell stays yellow's and yellow flies as planned. Green waits one tick in the cell before it, then follows yellow through.
+The cell stays green's and green flies as planned. Yellow waits one tick in the cell before it, then follows green through.
 
 ### A cell that cannot be reached
 
@@ -161,7 +164,7 @@ Before each move up it checks the skipped cells. Here the known way back, round 
 
 Yellow's column is one cell wider than red's, which leaves it 14 more cells to cover.
 
-Neighbours compare their remaining work every 5 ticks. Red takes the nearest cell of yellow's column in every row above them both, twelve cells in all, so its rows are one cell wider from there up and the two finish closer together.
+Neighbours compare their remaining work every tick. Red takes half the difference, seven cells: the nearest cell of yellow's column in each of the top seven rows. Its rows are one cell wider from there up, and the two finish on the same tick.
 
 ### A drone finishes early
 
@@ -171,7 +174,66 @@ Red's column is one cell narrower than yellow's, so red finishes while yellow st
 
 A finished drone takes over the cells the busiest drone would reach last, as many as it can finish by the time that drone is done. Red flies on into yellow's top row and takes four cells, and the two finish within two ticks of each other.
 
-### Cases without a picture yet
+### Cells walled off from their own drone
 
-- **A taken cell that a re-plan would bypass.** A drone that took a neighbour's cell for a detour keeps it as a required stop: if it has to re-plan, the new route still goes through that cell first. No small map shows this cleanly yet.
-- **A drone that stops making progress.** A drone that goes 270 ticks (on this field) without ticking off a cell drops the one it is heading for and picks another, so one cell can never stall a run. It has not happened in testing.
+![pocket handover](docs/edge_cases/pocket_handover.png)
+
+A pocket in yellow's column is closed on the top, right and bottom and opens only towards red's column, and a short wall runs up the boundary above it. Yellow climbs past on the far side, and left alone would fly all the way back round for it at the end.
+
+Each time yellow is about to move up, any drone closer to the cells it is leaving behind takes them. Red is beside the opening, so the pocket's rows join red's sweep. Red then has more to do, so the boundary shift gives yellow cells from the top of red's column. The run takes 128 ticks instead of 140.
+
+### A taken cell that a re-plan would bypass
+
+![kept stop](docs/edge_cases/kept_stop.png)
+
+Green's way up is walled off, so it plans a detour through yellow's column and takes two of yellow's top-row cells that the route crosses. One of them turns out to be an obstacle, which kills the detour, and green has to go the long way round its own side.
+
+The other taken cell is no longer on the way to anything, but yellow has dropped it. Green keeps it as a required stop: it comes round, steps one cell out along the top row to fly over it, and comes back.
+
+### Stuck behind a drone that is not moving
+
+![wait then go round](docs/edge_cases/wait_then_go_round.png)
+
+Blue is cutting through the middle of the field to get round obstacles on its walk out. The cell ahead holds green, which is itself held up by yellow.
+
+Blue waits one tick in case the way clears. Green is still there, so on the next tick blue plans a route around the cell green is in and carries on.
+
+### The next cell has another drone in it
+
+![occupied target](docs/edge_cases/occupied_target.png)
+
+Green's next cell is one step away, but yellow and then red pass through it on their way round an obstacle.
+
+Green waits a tick, then drops the cell instead of queueing for it, since a drone is flying over it anyway. Green carries on with its sweep and never goes back for that cell.
+
+### New eyes over the same eyes
+
+![new eyes](docs/edge_cases/new_eyes.png)
+
+Red has flown into a one-cell pocket and heads for its next row, three rows up. Two routes are equally short. One runs over a cell only red has flown; the other over a cell on the edge of yellow's column that only yellow has flown.
+
+Red takes the one through yellow's cell, which gives that cell a second look, where re-flying its own cell would add nothing. This only settles ties between equally short routes and never makes a route longer.
+
+### Obstacles on the first row
+
+![blocked start](docs/edge_cases/blocked_start.png)
+
+Three obstacles fill the bottom row of red's column, so the first cells of its sweep do not exist.
+
+The first row gets no special treatment. Red heads for the cheapest end of the first row it can reach, one row up, and starts sweeping there without waiting.
+
+### A row cut in two by one obstacle
+
+![split row](docs/edge_cases/split_row.png)
+
+An obstacle splits a row into a single cell on the left and four cells on the right. The drone arrives on the left.
+
+It flies the single cell, goes over the obstacle through the row above and drops back down to finish the right-hand part before carrying on upwards. A cell below the drone costs only its steps, while every row up costs 3 more, so a row is not left half done.
+
+### A cell that takes too long to reach
+
+![stalled](docs/edge_cases/stalled.png)
+
+For this picture the stall limit was cut from 51 ticks to 3. The drone sets off round the foot of the wall for a cell on the other side, and the trip is longer than that.
+
+After 4 ticks without flying over a new cell it drops the cell it was heading for and picks the next one, which leaves one cell unflown. At the real limit, 270 ticks on the full field, this has never happened in testing. It is there so that one cell can never hold up a run.
