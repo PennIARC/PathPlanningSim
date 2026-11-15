@@ -23,7 +23,7 @@ OBSTACLE_RATE_STEP = 0.005 # the slider moves in steps of this size (0.5%)
 MAX_CLUSTER_WEIGHT = 10.0  # right-hand end of the clustering slider; its left-hand end is 1x (no clustering)
 CLUSTER_WEIGHT_STEP = 0.5
 MAX_OBSTACLE_ROUNDS = 8    # right-hand end of the rounds slider; its left-hand end is 1 round
-HOLD_DELAY = 0.2           # seconds a step key or button must be held before it starts repeating
+HOLD_DELAY = 0.2           # seconds an arrow key or the Step / Back button must be held before it starts repeating
 TRAIL_SUPERSAMPLE = 2      # trails and drones are drawn this many times larger, then shrunk, to smooth their edges
 TRAIL_WIDTH = 1.5          # trail thickness, in scaled-down px
 TRAIL_OPACITY = 0.55       # how strongly a trail shows over the grid
@@ -260,14 +260,15 @@ def main():
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
-                if event.key == pygame.K_SPACE and playing:
-                    playing = False
-                elif event.key in (pygame.K_SPACE, pygame.K_RIGHT, pygame.K_LEFT):
+                if event.key == pygame.K_SPACE:  # play / pause
+                    playing = not playing and not sim.finished()
+                    step_timer = 0.0
+                elif event.key in (pygame.K_RIGHT, pygame.K_LEFT):  # step forward / back; hold to repeat
                     playing = False
                     held_action = sim.step_back if event.key == pygame.K_LEFT else sim.step
                     held_action()
                     hold_time, step_timer = 0.0, 0.0
-            if event.type == pygame.KEYUP and event.key in (pygame.K_SPACE, pygame.K_RIGHT, pygame.K_LEFT):
+            if event.type == pygame.KEYUP and event.key in (pygame.K_RIGHT, pygame.K_LEFT):
                 held_action = None
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if play_button.hit((mx, my)):

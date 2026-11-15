@@ -125,7 +125,8 @@ class Planner:
     REROUTE_AFTER = 2  # ticks a drone that has to give way waits behind another drone before finding a way round it
     GIVE_UP_AFTER = 8  # ticks blocked with no way round before the cell it was heading for is skipped
     STALL_FACTOR = 3   # a cell not reached within this many times (width + height) ticks is skipped
-    CLIMB_COST = 6     # extra steps a drone will fly to finish cells at or below its row before moving up one row
+    CLIMB_COST = 3     # extra steps a drone will fly to finish cells at or below its row before moving up one row.
+                       # Tuned by measurement on the 30 x 60 field: see the Parameters table in the README.
 
     def __init__(self, grid, drones, obstacles):
         self.grid = grid            # the live map; holds which drone each cell is assigned to
