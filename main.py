@@ -4,7 +4,7 @@ import pygame
 
 from Sim import Simulation
 from palette import (ACCENT_COLOR, BACKGROUND_COLOR, BUTTON_COLOR, BUTTON_HOVER_COLOR, OBSTACLE_COLOR, SEEN_COLOR,
-                     TEXT_COLOR, UNSEEN_COLOR, Palette)
+                     TEXT_COLOR, UNSEEN_COLOR)
 from text import drawText
 from fontDict import fonts
 
@@ -15,7 +15,7 @@ PADDING = 20            # px (in scaled-down space) kept clear around each grid
 TITLE_H = 16            # px above each grid for its title
 BAR_H = 36              # px at the bottom for the buttons
 TILE_GAP = 1            # px between cells, which is what makes the grid visible
-STEPS_PER_SECOND = 10   # auto-step speed while playing
+STEPS_PER_SECOND = 20   # auto-step speed while playing
 ALLOCATION_OPACITY = 0.6   # middle grid: how strongly a drone's colour tints its cells
 MAX_OBSTACLE_RATE = 0.5    # right-hand end of the obstacle slider
 
@@ -234,8 +234,8 @@ def main():
         drawText(screenUI, TEXT_COLOR, font_small, slider_label_x, text_y, f"obstacles {round(sim.obstacleRate * 100)}%")
         drawText(screenUI, TEXT_COLOR, font_small, status_x, text_y, f"tick {sim.tick}" + ("  done" if sim.finished() else ""))
         drawText(screenUI, ACCENT_COLOR, font_regular, 5, screen_height - 30 / (SCALE_DOWN_FACTOR ** (1 / 1.8)),
-                 str(round(clock.get_fps())), Palette.navy_dark, 1, antiAliasing=False)
-        pygame.draw.circle(screenUI, Palette.navy_dark, (mx + 1, my + 1), 2, 1)
+                 str(round(clock.get_fps())), BACKGROUND_COLOR, 1, antiAliasing=False)
+        pygame.draw.circle(screenUI, BACKGROUND_COLOR, (mx + 1, my + 1), 2, 1)
         pygame.draw.circle(screenUI, ACCENT_COLOR, (mx, my), 2, 1)
 
         screen.blit(screen2_scaled, (0, 0))

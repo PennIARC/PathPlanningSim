@@ -32,13 +32,16 @@ class Simulation:
         self.reset()
 
     def set_obstacle_rate(self, rate):
-        """Changes how much of the map is obstacles (0 to 1), and resets. Returns False if nothing changed."""
+        """Changes how much of the map is obstacles (0 to 1), with a fresh random layout, and resets.
+
+        Returns False if the number of obstacles did not change, in which case nothing is touched.
+        """
         rate = max(0.0, min(1.0, rate))
         if self.obstacle_count(rate) == self.obstacle_count():
             self.obstacleRate = rate
             return False
         self.obstacleRate = rate
-        self.reset()
+        self.randomize()
         return True
 
     def obstacle_count(self, rate=None):
@@ -46,13 +49,11 @@ class Simulation:
         return round(rate * self.world.width * self.world.height)
 
     def place_obstacles(self):
-        # The seed fixes an order over the free cells and the rate decides how many of them
-        # to take, so changing only the rate adds or removes obstacles without moving the rest.
+        # Seeded, so reset() rebuilds the same layout until randomize() picks a new seed
         rng = random.Random(self.seed)
         spawnCells = {d.position for d in self.drones}
         free = [(x, y) for y in range(self.world.height) for x in range(self.world.width) if (x, y) not in spawnCells]
-        rng.shuffle(free)
-        for x, y in free[:self.obstacle_count()]:
+        for x, y in rng.sample(free, min(self.obstacle_count(), len(free))):
             self.world.set_cell(x, y, isObstacle=True)
 
     def plan(self):

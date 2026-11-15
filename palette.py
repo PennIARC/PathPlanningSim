@@ -1,9 +1,15 @@
 """The project's colour palette, as [r, g, b] lists, plus what each colour is used for."""
 
 
+MUTE = 0.25  # how far each palette colour is pulled towards grey (0 = as given, 1 = fully grey)
+
+
 def _rgb(hex_code):
+    """Hex code to [r, g, b], desaturated by MUTE."""
     hex_code = hex_code.lstrip("#")
-    return [int(hex_code[i:i + 2], 16) for i in (0, 2, 4)]
+    r, g, b = (int(hex_code[i:i + 2], 16) for i in (0, 2, 4))
+    grey = 0.299 * r + 0.587 * g + 0.114 * b  # perceived brightness, so muting keeps each colour as light as it was
+    return [round(c + (grey - c) * MUTE) for c in (r, g, b)]
 
 
 class Palette:
@@ -21,7 +27,7 @@ class Palette:
     orange = _rgb("#BD6C43")
 
 
-BACKGROUND_COLOR = Palette.navy_dark   # behind everything, and the gaps between cells
+BACKGROUND_COLOR = [16, 18, 21]        # behind everything, and the gaps between cells (not from the palette)
 UNSEEN_COLOR = Palette.navy            # default cell
 SEEN_COLOR = Palette.blue              # cell a drone has seen
 OBSTACLE_COLOR = Palette.purple
