@@ -7,13 +7,16 @@ python3 -m venv .venv && .venv/bin/python3 -m pip install -r requirements.txt
 .venv/bin/python3 main.py         # visualizer
 .venv/bin/python3 Sim.py          # headless run, prints ticks and coverage
 .venv/bin/python3 edge_cases.py   # regenerates the screenshots below
+.venv/bin/python3 stress_test.py  # checks the planner on many maps, from open field to very dense
 ```
 
 In the visualizer, Space plays and pauses. The right arrow steps one tick and the left arrow steps back; hold either to repeat. The buttons along the bottom do the same, plus reset and randomize the obstacles. Esc quits. Three sliders control the obstacles:
 
-- **obstacles** is the share of the field that is obstacles, 0 to 20%.
-- **clustering** is how many times as likely a cell beside an existing obstacle is to become one. 1x is an even scatter, 3x is the default.
-- **rounds** is how many rounds the obstacles are placed in. Clustering only applies from the second round on, so more rounds let clusters grow larger.
+- **obstacles** is the share of the field that is obstacles, 0 to 30%.
+- **clustering** is how many times as likely a cell beside an existing obstacle is to become one. 1x is an even scatter, 3x is the default, and the slider goes to 20x.
+- **rounds** is how many rounds the obstacles are placed in. Clustering only applies from the second round on, so more rounds let clusters grow larger. 1 to 12.
+
+`stress_test.py` runs the planner on seven kinds of map, including ones far denser and more clustered than a real field, and checks every tick that no two drones share a cell or swap places and that none flies onto an obstacle. The harsh maps are there to shake out edge cases, not to tune against. It names the worst map of each kind, which can be replayed with `main.py --seed N --obstacles 0.3 --clustering 20 --rounds 12`.
 
 ## How the path planning works
 
@@ -45,7 +48,7 @@ Every number the planner depends on, all in `Planner` in `Pathing.py`, and where
 | `STALL_FACTOR` | 3 | A drone that goes `STALL_FACTOR x (width + height)` ticks without ticking off a cell drops the one it is heading for. | Picked as a safety net. On the 30 x 60 field the limit is 270 ticks, far longer than any real detour. It has never triggered in testing. |
 | Prediction horizon | length of the detour | How far ahead a neighbour's movements are played forward when deciding who reaches a shared cell first. | Derived. Anything the neighbour would reach later than the detouring drone counts as "later" anyway. |
 | `BACKTRACK_WEIGHT` | 1.0 | A drone about to move up goes back for a skipped cell if the trip is at most this many times the rows it still has to climb. 0 switches the behaviour off. | Derived, then checked. Going back now costs about two trips; leaving the cell to the end costs about one trip plus the rows left to climb, so the break-even is 1. Measured: 0 was 4% slower on random maps and up to 10% on maps with a walled-off area; 0.5 to 2.5 were within noise of each other. |
-| `REBALANCE_EVERY` | 5 ticks | How often work is shared out between drones. 0 switches sharing off. | Picked. 1, 5 and 15 finished within noise of each other. Sharing as a whole cut the time to finish by 8 to 9%. |
+| `REBALANCE_EVERY` | 5 ticks | How often work is shared out between drones. 0 switches sharing off. | Picked to keep the check cheap; it does not matter. Checking every 1, 2, 5, 10, 20 or 50 ticks finished within noise of each other on five kinds of map (30 maps each), from open field to 30% clustered obstacles. Switching sharing off was 4 to 5% slower on all of them. |
 | `REBALANCE_GAP` | 10 cells | Two neighbours' remaining work must differ by more than this before a strip of cells moves between them. | Picked. 4, 10, 20 and 40 finished within noise of each other. |
 | `HELP_MIN` | 6 cells | A finished drone only helps a drone with at least this many cells left. | Picked. 2, 6 and 20 finished within noise of each other. |
 | Tie-breaks | left, lower index | Two equally cheap cells: the left one. Two drones with equal right of way: the lower index. | Picked, so that runs are repeatable. |

@@ -1,3 +1,4 @@
+import argparse
 import time
 
 import pygame
@@ -18,11 +19,11 @@ TILE_GAP = 1            # px between cells, which is what makes the grid visible
 STEPS_PER_SECOND = 40   # auto-step speed while playing
 ALLOCATION_OPACITY = 0.6   # middle grid: how strongly a drone's colour tints its cells
 VISIT_OUTLINE = 2          # middle grid: thickness in scaled-down px of the outline a visiting drone leaves on a cell
-MAX_OBSTACLE_RATE = 0.2    # right-hand end of the obstacle slider
+MAX_OBSTACLE_RATE = 0.3    # right-hand end of the obstacle slider
 OBSTACLE_RATE_STEP = 0.005 # the slider moves in steps of this size (0.5%)
-MAX_CLUSTER_WEIGHT = 10.0  # right-hand end of the clustering slider; its left-hand end is 1x (no clustering)
+MAX_CLUSTER_WEIGHT = 20.0  # right-hand end of the clustering slider; its left-hand end is 1x (no clustering)
 CLUSTER_WEIGHT_STEP = 0.5
-MAX_OBSTACLE_ROUNDS = 8    # right-hand end of the rounds slider; its left-hand end is 1 round
+MAX_OBSTACLE_ROUNDS = 12   # right-hand end of the rounds slider; its left-hand end is 1 round
 HOLD_DELAY = 0.2           # seconds an arrow key or the Step / Back button must be held before it starts repeating
 TRAIL_SUPERSAMPLE = 2      # trails and drones are drawn this many times larger, then shrunk, to smooth their edges
 TRAIL_WIDTH = 1.5          # trail thickness, in scaled-down px
@@ -202,7 +203,15 @@ def main():
     font_regular = fonts[f"regular{int(25 / (SCALE_DOWN_FACTOR ** (1 / 1.5)))}"]
     font_small = fonts[f"regular{int(18 / (SCALE_DOWN_FACTOR ** (1 / 1.5)))}"]
 
-    sim = Simulation(keepHistory=True)
+    # Optional starting map, e.g. to replay one that stress_test.py flagged
+    parser = argparse.ArgumentParser(description="Path planning visualizer")
+    parser.add_argument("--seed", type=int, help="obstacle layout to start with")
+    parser.add_argument("--obstacles", type=float, help="share of cells that are obstacles, e.g. 0.2")
+    parser.add_argument("--clustering", type=float, help="clustering multiplier, e.g. 10")
+    parser.add_argument("--rounds", type=int, help="obstacle placement rounds, e.g. 8")
+    args = parser.parse_args()
+    options = {"seed": args.seed, "obstacleRate": args.obstacles, "clusterWeight": args.clustering, "obstacleRounds": args.rounds}
+    sim = Simulation(keepHistory=True, **{name: value for name, value in options.items() if value is not None})
     tile_size, positions = layout_grids((screen_width, screen_height), sim.world.width, sim.world.height, len(VIEWS))
     drone_layer_scale = tile_size * SCALE_DOWN_FACTOR * TRAIL_SUPERSAMPLE
     drone_layer = pygame.Surface((sim.world.width * drone_layer_scale, sim.world.height * drone_layer_scale)).convert()
