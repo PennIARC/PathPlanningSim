@@ -1,3 +1,4 @@
+import collections
 import heapq
 
 GRID_WIDTH = 20    # cells across the field
@@ -57,28 +58,6 @@ def split_into_columns(width, numDrones):
     return [list(range(bounds[i], bounds[i + 1])) for i in range(numDrones)]
 
 
-def boustrophedon_path(columnXs, height, startX):
-    """Back-and-forth ("bous") sweep of one vertical strip, from the bottom row to the top row.
-
-    Each row is crossed fully, then the path moves up one row and crosses back
-    the other way. The first row starts from whichever side of the strip is
-    closer to startX. Returns a list of (x, y) cells, each next to the one before.
-    """
-    if not columnXs:
-        return []
-    leftToRight = abs(startX - columnXs[0]) <= abs(startX - columnXs[-1])
-    path = []
-    for y in range(height - 1, -1, -1):
-        xs = columnXs if leftToRight else columnXs[::-1]
-        path.extend((x, y) for x in xs)
-        leftToRight = not leftToRight
-    return path
-
-
-def adjacent(a, b):
-    return abs(a[0] - b[0]) + abs(a[1] - b[1]) == 1
-
-
 def astar(grid, start, goal, blocked):
     """Shortest path from start to goal, never entering a cell in `blocked`.
 
@@ -122,24 +101,28 @@ def astar(grid, start, goal, blocked):
 class Planner:
     """Decides where every drone goes each tick.
 
-    Each drone has `targets`: the cells it still has to fly over, in order. At
-    first that is its bous sweep. Its `route` is the cell-by-cell way to
-    targets[0]. While nothing is in the way the route is a single step to the
-    next bous cell. When a target turns out to be an obstacle it is dropped and
-    A* finds a detour to the next one, around every obstacle any drone has seen.
+    Each drone sweeps its strip row by row from the bottom (the bous sweep).
+    `targets` is the set of its own cells still to fly over and `stops` is an
+    ordered list of cells it took over from other drones, which come first.
+    Whenever it needs somewhere to go it heads for whichever end of the
+    unvisited cells in its current row is closer, so it sweeps a row from
+    either side. `route` is the cell-by-cell way there, found with A* around
+    every obstacle any drone has seen. Obstacle cells are dropped as they are
+    discovered.
 
-    A detour may cross cells that belong to another drone. For each such cell:
+    A route longer than one step is a detour, and it may cross cells that
+    belong to another drone. For each such cell:
       - the owner gets there first: nothing changes, the cell is just flown through
       - both would get there on the same tick: the owner goes first and the
         detouring drone waits a turn (handled by resolve_moves)
-      - the owner would get there later: the detouring drone takes the cell over,
-        and it becomes one of its own targets
+      - the owner would get there later: the detouring drone takes the cell over
+        and it becomes one of its stops
     The walk from a drone's start cell to its strip never takes cells.
     """
 
     REROUTE_AFTER = 2  # ticks a drone that has to give way waits behind another drone before finding a way round it
-    GIVE_UP_AFTER = 8  # ticks blocked with no way round before the target is skipped
-    STALL_FACTOR = 3   # a target not reached within this many times (width + height) ticks is skipped
+    GIVE_UP_AFTER = 8  # ticks blocked with no way round before the cell it was heading for is skipped
+    STALL_FACTOR = 3   # a cell not reached within this many times (width + height) ticks is skipped
 
     def __init__(self, grid, drones, obstacles):
         self.grid = grid            # the live map; holds which drone each cell is assigned to
@@ -147,20 +130,20 @@ class Planner:
         self.obstacles = obstacles  # shared set of (x, y) obstacle cells the drones have seen so far
 
     def assign(self):
-        """Gives each drone a vertical strip of the field and the bous sweep of it as its targets."""
+        """Gives each drone a vertical strip of the field; every cell in it becomes a target."""
         columns = split_into_columns(self.grid.width, len(self.drones))
         for drone, columnXs in zip(self.drones, columns):
             for x in columnXs:
                 for y in range(self.grid.height):
                     self.grid.set_cell(x, y, droneAllocationIndex=drone.index)
                     drone.assignedCells.add((x, y))
-            drone.targets = boustrophedon_path(columnXs, self.grid.height, drone.position[0])
+                    drone.targets.add((x, y))
             drone.mark_visited()
 
     # ---------------- Planning
 
     def plan(self):
-        """Makes sure every drone has a usable route to its next target."""
+        """Makes sure every drone has a usable route to the next cell it should fly over."""
         for x, y in self.obstacles:  # a cell found to be an obstacle no longer belongs to any drone
             index = self.grid.cells[y][x].droneAllocationIndex
             if index is not None:
@@ -175,59 +158,128 @@ class Planner:
 
     def _plan_drone(self, drone):
         """Returns True if this took cells from another drone, whose plan then needs another look."""
-        drone.targets = [t for t in drone.targets if t not in self.obstacles]
-        if not drone.targets:
+        drone.targets -= self.obstacles
+        drone.stops = [c for c in drone.stops if c not in self.obstacles]
+        if drone.makingWay:  # stepping aside for another drone: finish that before anything else
+            if drone.route and drone.blockedTicks < self.REROUTE_AFTER and not any(c in self.obstacles for c in drone.route):
+                return False
+            drone.makingWay = False
+            drone.route = []
+        if drone.finished():
             drone.route = []
             return False
 
-        if drone.ticksSinceProgress > self.STALL_FACTOR * (self.grid.width + self.grid.height):
-            drone.targets.pop(0)  # safety net: never let one target hold a drone up forever
+        if drone.route and drone.ticksSinceProgress > self.STALL_FACTOR * (self.grid.width + self.grid.height):
+            self._drop(drone, drone.route[-1])  # safety net: never let one cell hold a drone up forever
             drone.ticksSinceProgress = 0
-            return self._route_to_next_target(drone, self.obstacles)
+            return self._route_to_next_goal(drone)
 
         # In a head-on meeting only the drone that gives way looks for a way round; the other holds its line
         if drone.route and drone.blockedTicks >= (self.REROUTE_AFTER if drone.yielding else self.GIVE_UP_AFTER):
             return self._route_around_drone(drone)
 
-        routeOk = drone.route and drone.route[-1] == drone.targets[0] and not any(c in self.obstacles for c in drone.route)
-        if routeOk:
-            return False
-        return self._route_to_next_target(drone, self.obstacles)
+        if drone.route:
+            goal = drone.route[-1]
+            goalWanted = goal == drone.stops[0] if drone.stops else goal in drone.targets
+            if goalWanted and not any(c in self.obstacles for c in drone.route):
+                return False
+        return self._route_to_next_goal(drone)
 
-    def _route_to_next_target(self, drone, blocked):
-        """Runs A* to the next target, skipping targets that cannot be reached."""
-        while drone.targets:
-            route = astar(self.grid, drone.position, drone.targets[0], blocked)
+    def _next_leg(self, position, stops, targets):
+        """Picks the next cell to head for and returns the A* route to it; [] if there is nowhere left to go.
+
+        Stops come first, in order. After that the goal is one end of the
+        unvisited cells in the lowest unfinished row: whichever end is fewer
+        steps away (the left one on a tie). Cells that cannot be reached at all
+        are removed from `stops` / `targets` as they are found.
+        """
+        while stops:
+            route = astar(self.grid, position, stops[0], self.obstacles)
             if route:
-                drone.route = route
-                drone.detouring = len(route) > 1
-                drone.blockedTicks = 0
-                return self._take_cells(drone) if drone.detouring and not drone.inTransit else False
-            drone.targets.pop(0)  # walled in by known obstacles: skip it
-        drone.route = []
-        return False
+                return route
+            stops.pop(0)
+        while targets:
+            row = max(y for _, y in targets)
+            xs = [x for x, y in targets if y == row]
+            ends = [(min(xs), row), (max(xs), row)]
+            if ends[0] == ends[1]:
+                ends.pop()
+            routes = []
+            for end in ends:
+                route = astar(self.grid, position, end, self.obstacles)
+                if route:
+                    routes.append(route)
+                else:
+                    targets.discard(end)  # walled in by known obstacles: skip it
+            if routes:
+                return min(routes, key=len)
+        return []
+
+    def _set_route(self, drone, route):
+        """Returns True if the new route took cells from another drone."""
+        drone.route = route
+        drone.detouring = len(route) > 1
+        drone.blockedTicks = 0
+        return self._take_cells(drone) if drone.detouring and not drone.inTransit else False
+
+    def _route_to_next_goal(self, drone):
+        return self._set_route(drone, self._next_leg(drone.position, drone.stops, drone.targets))
+
+    def _drop(self, drone, cell):
+        drone.targets.discard(cell)
+        if cell in drone.stops:
+            drone.stops.remove(cell)
 
     def _route_around_drone(self, drone):
-        """The drone has been stuck behind another drone: go round it, or skip the cell if it is the target."""
-        blockedCell = drone.route[0]
-        if blockedCell == drone.targets[0]:
-            drone.targets.pop(0)
-            drone.blockedTicks = 0
-            return self._route_to_next_target(drone, self.obstacles)
-
-        route = astar(self.grid, drone.position, drone.targets[0], self.obstacles | {blockedCell})
-        if route:
-            drone.route = route
-            drone.detouring = True
-            drone.blockedTicks = 0
-            return self._take_cells(drone) if not drone.inTransit else False
-
+        """The drone has been stuck behind another drone: go round it, or skip the cell if it was heading there."""
+        blockedCell, goal = drone.route[0], drone.route[-1]
         blocker = next((d for d in self.drones if d.position == blockedCell), None)
-        if (blocker is not None and blocker.finished()) or drone.blockedTicks >= self.GIVE_UP_AFTER:
-            drone.targets.pop(0)
-            drone.blockedTicks = 0
-            return self._route_to_next_target(drone, self.obstacles)
-        return False  # no way round yet: keep waiting
+        parked = blocker is not None and blocker.finished() and not blocker.route
+        if parked and self._make_way(blocker, drone):
+            drone.blockedTicks = 0  # a finished drone was sitting in the way: it moves aside and this one carries on
+            return False
+        if blockedCell == goal:
+            self._drop(drone, goal)
+            return self._route_to_next_goal(drone)
+
+        route = astar(self.grid, drone.position, goal, self.obstacles | {blockedCell})
+        if route:
+            changedOthers = self._set_route(drone, route)
+            drone.detouring = True
+            return changedOthers
+
+        # No way round, e.g. a one-cell-wide gap: the drone giving way backs out to let the other through
+        if blocker is not None and not parked and drone.yielding and self._make_way(drone, blocker):
+            return False
+        if parked or drone.blockedTicks >= self.GIVE_UP_AFTER:
+            self._drop(drone, goal)
+            return self._route_to_next_goal(drone)
+        return False  # nowhere to go yet: keep waiting
+
+    def _make_way(self, mover, other):
+        """Sends `mover` to the nearest free cell that is off `other`'s route. Returns False if there is none."""
+        avoid = set(other.route) | {other.position}
+        occupied = {d.position for d in self.drones if d is not mover}
+        cameFrom = {mover.position: None}
+        queue = collections.deque([mover.position])
+        while queue:
+            cell = queue.popleft()
+            if cell != mover.position and cell not in avoid:
+                path = []
+                while cell != mover.position:
+                    path.append(cell)
+                    cell = cameFrom[cell]
+                mover.route = path[::-1]
+                mover.detouring = True
+                mover.makingWay = True
+                mover.blockedTicks = 0
+                return True
+            for dx, dy in NEIGHBOURS:
+                nxt = (cell[0] + dx, cell[1] + dy)
+                if self.grid.in_bounds(*nxt) and nxt not in self.obstacles and nxt not in occupied and nxt not in cameFrom:
+                    cameFrom[nxt] = cell
+                    queue.append(nxt)
+        return False
 
     def _take_cells(self, drone):
         """Applies the three cases to every other drone's cell on this drone's detour."""
@@ -239,15 +291,15 @@ class Planner:
             if ownerIndex is None or ownerIndex == drone.index:
                 continue
             owner = self.drones[ownerIndex]
-            if cell not in owner.targets:
+            if cell not in owner.targets and cell not in owner.stops:
                 continue  # the owner has already been there, or is not going: just fly through
             if ownerIndex not in etas:
-                etas[ownerIndex] = self._arrival_ticks(owner)
+                etas[ownerIndex] = self._arrival_ticks(owner, len(drone.route))
             ownerEta = etas[ownerIndex].get(cell)
             if ownerEta is not None and ownerEta <= i + 1:
                 continue  # the owner gets there first, or on the same tick (it then goes first and this drone waits)
 
-            owner.targets.remove(cell)
+            self._drop(owner, cell)
             owner.assignedCells.discard(cell)
             if owner.route and owner.route[-1] == cell:
                 owner.route = []
@@ -255,31 +307,29 @@ class Planner:
             self.grid.set_cell(cell[0], cell[1], droneAllocationIndex=drone.index)
             taken.append(cell)
             changedOthers = True
-        drone.targets[0:0] = taken  # required stops, in the order the detour reaches them
+        drone.stops[0:0] = taken  # required stops, in the order the detour reaches them
         return changedOthers
 
-    def _arrival_ticks(self, drone):
-        """How many ticks from now the drone expects to reach each cell ahead of it, if nothing holds it up."""
+    def _arrival_ticks(self, drone, horizon):
+        """How many ticks from now the drone expects to reach each cell ahead of it, if nothing holds it up.
+
+        Plays the drone's own goal-picking forward for `horizon` ticks. Cells it
+        would only reach after that are left out.
+        """
         ticks = {}
         count = 0
         position = drone.position
-        for cell in drone.route:
-            count += 1
-            ticks.setdefault(cell, count)
-            position = cell
-        for target in drone.targets:
-            if target == position:
-                continue
-            if adjacent(position, target):
-                leg = [target]
-            else:
-                leg = astar(self.grid, position, target, self.obstacles)
-                if leg is None:
-                    continue
+        stops, targets = list(drone.stops), set(drone.targets)
+        leg = drone.route
+        while leg and count < horizon:
             for cell in leg:
                 count += 1
                 ticks.setdefault(cell, count)
-            position = target
+                targets.discard(cell)
+                if cell in stops:
+                    stops.remove(cell)
+            position = leg[-1]
+            leg = self._next_leg(position, stops, targets)
         return ticks
 
     # ---------------- Moving
@@ -289,8 +339,8 @@ class Planner:
 
         A drone has to wait if its next cell is being entered by a drone with
         right of way, is occupied by a drone that is staying put, or would mean
-        swapping places. Drones on their bous path have right of way over
-        detouring ones; ties go to the lower index.
+        swapping places. Drones making a single step along their sweep have
+        right of way over detouring ones; ties go to the lower index.
         """
         wants = {d: d.route[0] for d in self.drones if d.route}
         at = {d.position: d for d in self.drones}

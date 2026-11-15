@@ -60,22 +60,26 @@ class Drone:
         self.trailLanes = [None]  # for each trail entry, how many earlier flights there were along the step into it
 
         # Planning state, managed by Pathing.Planner
-        self.targets = []       # cells still to fly over, in order
-        self.route = []         # cell-by-cell steps to targets[0]
-        self.detouring = False  # the current route is an A* detour rather than a single step along the sweep
+        self.targets = set()    # this drone's own cells still to fly over
+        self.stops = []         # cells taken over from other drones; flown over first, in this order
+        self.route = []         # cell-by-cell steps to the cell it is heading for
+        self.detouring = False  # the current route is longer than a single step along the sweep
         self.inTransit = True   # still on the way from the start cell to the first target
         self.blockedTicks = 0   # ticks in a row spent waiting behind another drone
         self.yielding = True    # when blocked: this drone is the one that has to give way
-        self.ticksSinceProgress = 0  # ticks since a target was last ticked off
+        self.makingWay = False  # the current route just moves this drone out of another drone's way
+        self.ticksSinceProgress = 0  # ticks since a target or stop was last ticked off
 
     def finished(self):
-        return not self.targets
+        return not self.targets and not self.stops
 
     def mark_visited(self):
-        """Ticks the current cell off the list of targets, wherever in the list it is."""
+        """Ticks the current cell off this drone's targets and stops."""
         self.visited.add(self.position)
-        if self.position in self.targets:
-            self.targets.remove(self.position)
+        if self.position in self.targets or self.position in self.stops:
+            self.targets.discard(self.position)
+            if self.position in self.stops:
+                self.stops.remove(self.position)
             self.inTransit = False
             self.ticksSinceProgress = 0
 
