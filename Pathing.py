@@ -1,8 +1,8 @@
 import collections
 import heapq
 
-GRID_WIDTH = 20    # cells across the field
-GRID_HEIGHT = 40   # cells along the field; drones start at the bottom and work upwards
+GRID_WIDTH = 30    # cells across the field
+GRID_HEIGHT = 60   # cells along the field; drones start at the bottom and work upwards
 
 NEIGHBOURS = ((1, 0), (-1, 0), (0, -1), (0, 1))  # drones move one cell left, right, up or down per tick
 

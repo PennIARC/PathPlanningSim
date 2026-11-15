@@ -20,8 +20,10 @@ ALLOCATION_OPACITY = 0.6   # middle grid: how strongly a drone's colour tints it
 VISIT_OUTLINE = 2          # middle grid: thickness in scaled-down px of the outline a visiting drone leaves on a cell
 MAX_OBSTACLE_RATE = 0.2    # right-hand end of the obstacle slider
 OBSTACLE_RATE_STEP = 0.005 # the slider moves in steps of this size (0.5%)
+MAX_CLUSTER_BIAS = 10.0    # right-hand end of the clustering slider
+CLUSTER_BIAS_STEP = 0.5
 HOLD_DELAY = 0.2           # seconds a step key or button must be held before it starts repeating
-TRAIL_SUPERSAMPLE = 3      # trails and drones are drawn this many times larger, then shrunk, to smooth their edges
+TRAIL_SUPERSAMPLE = 2      # trails and drones are drawn this many times larger, then shrunk, to smooth their edges
 TRAIL_WIDTH = 1.5          # trail thickness, in scaled-down px
 TRAIL_OPACITY = 0.55       # how strongly a trail shows over the grid
 
@@ -197,11 +199,11 @@ def main():
     drone_layer = pygame.Surface((sim.world.width * drone_layer_scale, sim.world.height * drone_layer_scale)).convert()
     trail_layer = drone_layer.copy()
 
-    # ---------------- Bottom bar: Play, Back, Step, Reset, Randomize, obstacle slider, then the tick counter
+    # ---------------- Bottom bar: Play, Back, Step, Reset, Randomize, the two obstacle sliders, then the tick counter
     button_h, gap = 20, 8
     widths = [52, 52, 52, 52, 76]
-    slider_w, slider_label_w, status_w = 90, 96, 60
-    bar_w = sum(widths) + gap * len(widths) + slider_w + gap + slider_label_w + status_w
+    slider_w, slider_label_w, status_w = 70, 92, 60
+    bar_w = sum(widths) + gap * len(widths) + 2 * (slider_w + gap + 4 + slider_label_w) + status_w
     x = (screen_width - bar_w) // 2
     bar_y = screen_height - BAR_H + (BAR_H - button_h) // 2 - 4
     buttons = []
@@ -209,9 +211,11 @@ def main():
         buttons.append(Button((x, bar_y, w, button_h), label))
         x += w + gap
     play_button, back_button, step_button, reset_button, randomize_button = buttons
-    slider = Slider((x + 4, bar_y, slider_w, button_h), sim.obstacleRate, MAX_OBSTACLE_RATE, OBSTACLE_RATE_STEP)
-    slider_label_x = slider.rect.right + gap + 4
-    status_x = slider_label_x + slider_label_w
+    rate_slider = Slider((x + 4, bar_y, slider_w, button_h), sim.obstacleRate, MAX_OBSTACLE_RATE, OBSTACLE_RATE_STEP)
+    rate_label_x = rate_slider.rect.right + gap + 4
+    bias_slider = Slider((rate_label_x + slider_label_w, bar_y, slider_w, button_h), sim.clusterBias, MAX_CLUSTER_BIAS, CLUSTER_BIAS_STEP)
+    bias_label_x = bias_slider.rect.right + gap + 4
+    status_x = bias_label_x + slider_label_w
     text_y = bar_y + (button_h - font_small.get_height()) / 2
 
     pygame.mouse.set_visible(False)
@@ -261,14 +265,18 @@ def main():
                 elif randomize_button.hit((mx, my)):
                     sim.randomize()
                     playing = False
-                elif slider.hit((mx, my)):
-                    slider.dragging = True
+                elif rate_slider.hit((mx, my)):
+                    rate_slider.dragging = True
+                elif bias_slider.hit((mx, my)):
+                    bias_slider.dragging = True
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                slider.dragging = False
+                rate_slider.dragging = bias_slider.dragging = False
                 held_action = None
 
-        # Dragging the slider changes the obstacles, which puts the drones back at the start
-        if slider.dragging and sim.set_obstacle_rate(slider.drag_to(mx)):
+        # Dragging either slider changes the obstacles, which puts the drones back at the start
+        if rate_slider.dragging and sim.set_obstacle_rate(rate_slider.drag_to(mx)):
+            playing = False
+        if bias_slider.dragging and sim.set_cluster_bias(bias_slider.drag_to(mx)):
             playing = False
 
         # ---------------- Simulation: auto-step while playing, or repeat a step once it has been held long enough
@@ -295,8 +303,10 @@ def main():
         screenUI.fill((0, 0, 0, 0))
         for button in buttons:
             button.draw(screenUI, font_small, (mx, my))
-        slider.draw(screenUI)
-        drawText(screenUI, TEXT_COLOR, font_small, slider_label_x, text_y, f"obstacles {sim.obstacleRate * 100:.1f}%")
+        rate_slider.draw(screenUI)
+        bias_slider.draw(screenUI)
+        drawText(screenUI, TEXT_COLOR, font_small, rate_label_x, text_y, f"obstacles {sim.obstacleRate * 100:.1f}%")
+        drawText(screenUI, TEXT_COLOR, font_small, bias_label_x, text_y, f"clustering {sim.clusterBias:.1f}")
         drawText(screenUI, TEXT_COLOR, font_small, status_x, text_y, f"tick {sim.tick}" + ("  done" if sim.finished() else ""))
         drawText(screenUI, FPS_COLOR, font_regular, 5, screen_height - 30 / (SCALE_DOWN_FACTOR ** (1 / 1.8)),
                  str(round(clock.get_fps())), BACKGROUND_COLOR, 1, antiAliasing=False)

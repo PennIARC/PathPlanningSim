@@ -1,3 +1,4 @@
+import copy
 import math
 
 from palette import DRONE_COLORS
@@ -69,6 +70,14 @@ class Drone:
         self.yielding = True    # when blocked: this drone is the one that has to give way
         self.makingWay = False  # the current route just moves this drone out of another drone's way
         self.ticksSinceProgress = 0  # ticks since a target or stop was last ticked off
+
+    def clone(self):
+        """A copy for the sim's undo history. The shared obstacle set and pass counts are re-linked by the sim."""
+        other = copy.copy(self)
+        for name, value in vars(self).items():
+            if isinstance(value, (list, set)):
+                setattr(other, name, type(value)(value))
+        return other
 
     def finished(self):
         return not self.targets and not self.stops
