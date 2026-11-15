@@ -148,6 +148,8 @@ class Planner:
     REBALANCE_EVERY = 1     # ticks between checks that share work out between drones (0 = never)
     REBALANCE_GAP = 1       # two neighbours' remaining work must differ by more than this many cells before cells move
     HELP_MIN = 6            # a finished drone only helps a drone that has at least this many cells left
+    SIDE_ROW_MIN = 3        # a detour's sideways stretch over old ground moves one row over, at a cost of two steps,
+                            # if that flies it over at least this many of the drone's unvisited cells (0 = never)
 
     def __init__(self, grid, drones, obstacles):
         self.grid = grid            # the live map; holds which drone each cell is assigned to
@@ -227,7 +229,7 @@ class Planner:
         while stops:
             route = astar(self.grid, position, stops[0], self.obstacles, flyer)
             if route:
-                return route
+                return self._use_side_rows(position, route, stops, targets)
             stops.pop(0)
         best = self._best_end(position, targets, flyer)
         if best is None:
@@ -235,8 +237,52 @@ class Planner:
         if best[2][1] < position[1]:  # about to move up a row: first see if skipped cells below are worth going back for
             goBack = self._route_back_to_skipped(position, targets, flyer)
             if goBack:
-                return goBack
-        return best[1]
+                return self._use_side_rows(position, goBack, stops, targets)
+        return self._use_side_rows(position, best[1], stops, targets)
+
+    def _use_side_rows(self, position, route, stops, targets):
+        """Moves sideways stretches of a detour onto the row above or below when that covers new cells.
+
+        A detour often has to cross cells already flown, e.g. along a finished
+        row to get round the end of a wall. If the same stretch one row over is
+        all unvisited cells of this drone, the route steps over to that row,
+        flies the stretch there and steps back: two extra steps, and that part
+        of the row never needs its own visit. Where the route was about to turn
+        that way anyway the swap costs nothing and is always made.
+        """
+        if not self.SIDE_ROW_MIN or len(route) < 2:
+            return route
+        path = [position] + route
+        end = len(path) - 1
+        while end > 0:  # work backwards so earlier indexes stay valid as the path is edited
+            start = end
+            while start > 0 and path[start - 1][1] == path[end][1]:
+                start -= 1
+            best = None  # (cells gained minus extra steps, first index, last index, row offset, extra steps)
+            for dy in (-1, 1):
+                i = start
+                while i <= end:
+                    if (path[i][0], path[i][1] + dy) not in targets:
+                        i += 1
+                        continue
+                    j = i
+                    while j < end and (path[j + 1][0], path[j + 1][1] + dy) in targets:
+                        j += 1
+                    turnsThere = j + 1 < len(path) and path[j + 1] == (path[j][0], path[j][1] + dy)
+                    skipped = path[i + 1:j + 1] if turnsThere else path[i + 1:j]
+                    extra = 0 if turnsThere else 2
+                    gain = j - i + 1 - turnsThere  # the turn already flew over the last of them
+                    wanted = any(cell in targets or cell in stops for cell in skipped)
+                    if j > i and not wanted and gain >= (1 if turnsThere else self.SIDE_ROW_MIN):
+                        if best is None or gain - extra > best[0]:
+                            best = (gain - extra, i, j, dy, extra)
+                    i = j + 1
+            if best is not None:
+                _, i, j, dy, extra = best
+                side = [(x, y + dy) for x, y in path[i:j + 1]]
+                path[i + 1:j + (0 if extra else 1)] = side if extra else side[:-1]
+            end = start - 1
+        return path[1:]
 
     def _best_end(self, position, targets, flyer=None):
         """(cost, route, cell) for the cheapest end of any run of unvisited cells; None if none can be reached."""

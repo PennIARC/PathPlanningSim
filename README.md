@@ -36,6 +36,7 @@ The field is cut into one vertical column per drone. Each drone sweeps its colum
 - Before moving up a row, a drone also checks whether another drone is closer to the cells it is leaving behind. Each connected group of them goes to whichever drone has the shortest trip to it. Unseen cells count as free in that trip, so the owner keeps the cells while a way in may still exist.
 - Every tick the work is shared out. If two neighbours' remaining work differs by more than one cell, the lighter one takes half the difference from the edge of the other's column, furthest up the field first.
 - Among equally short routes, a drone takes the one over the most cells that another drone has flown and it has not, so a second pair of eyes sees them.
+- When a detour runs sideways over cells already flown, and the same stretch one row up or down is 3 or more of the drone's unvisited cells, the drone flies that row instead and steps back at the end. That costs two extra steps. Where the route was about to turn onto that row anyway it costs nothing, so one new cell is enough.
 - A drone that finishes takes over the cells the busiest drone would reach last, as many as it can finish by the time that drone is done. If nobody needs help it waits in its last cell.
 
 ## Parameters
@@ -54,13 +55,14 @@ Every number the planner depends on, all in `Planner` in `Pathing.py`, and where
 | `REBALANCE_GAP` | 1 cell | Two neighbours' remaining work must differ by more than this before cells move between them. Half the difference moves. | Chosen to keep the loads as even as possible, against the measurement. Thresholds of 1, 4 and 10 finished default maps in 488, 484 and 483 ticks on average (30 maps), and dense maps in 527, 523 and 516. At 1, cells change hands about 400 times a run on a default map; at 10, about 17. |
 | `HELP_MIN` | 6 cells | A finished drone only helps a drone with at least this many cells left. | Picked. 2, 6 and 20 finished within noise of each other. |
 | `HANDOVER_WEIGHT` | 1.0 | Cells a drone is leaving behind go to another drone if that drone's trip to them, times this, is shorter than the owner's. 0 switches handing over off. | Picked as the plain comparison, then checked. 0.75, 1, 1.5 and 2 finished default maps within a tick of each other. Switching it off makes no difference on default maps and is 1.6% slower on dense, clustered maps and 3% slower on very dense ones. |
+| `SIDE_ROW_MIN` | 3 cells | A sideways stretch of a detour over already-flown cells moves to the row above or below, for two extra steps, if that covers at least this many of the drone's unvisited cells. 0 switches it off. | Tuned. Off, 2, 3, 4 and 6 finished default maps in 488, 480, 476, 477 and 487 ticks on average (30 maps) and sparse maps in 478, 474, 467, 469 and 476. The open field is 2 ticks slower with it on (455 against 453). Where the route turns onto that row anyway the swap is free and one new cell is enough; asking for 3 there as well was 2 ticks slower on default maps. |
 | Tie-breaks | new eyes, left, lower index | Two equally short routes: the one over more cells that only other drones have flown. Two equally cheap cells: the left one. Two drones with equal right of way: the lower index. | Picked. The first gives a cell a second look for free; the others make runs repeatable. |
 
 ## Edge cases
 
 Each picture is the drone view of a small map built to make one situation happen, after the run has finished. A ring marks where a drone started and a dot where it ended. Purple cells are obstacles. Where a drone flew between the same two cells more than once, the lines are drawn side by side. Drones are red, yellow, green and blue, from left to right.
 
-To add a case, put its map in `CASES` in `edge_cases.py`, run the script, and describe it here. The maps are tuned to the planner as it stands, so after changing a planner rule or parameter, re-run the script and check each picture still shows what its entry says. Work sharing between drones is switched off in every picture except the two that are about it, so each shows one thing.
+To add a case, put its map in `CASES` in `edge_cases.py`, run the script, and describe it here. The maps are tuned to the planner as it stands, so after changing a planner rule or parameter, re-run the script and check each picture still shows what its entry says. Work sharing between drones and the side-row swap are switched off in every picture except the ones about them, so each shows one thing.
 
 ### A cell in the sweep is an obstacle
 
@@ -237,3 +239,11 @@ It flies the single cell, goes over the obstacle through the row above and drops
 For this picture the stall limit was cut from 51 ticks to 3. The drone sets off round the foot of the wall for a cell on the other side, and the trip is longer than that.
 
 After 4 ticks without flying over a new cell it drops the cell it was heading for and picks the next one, which leaves one cell unflown. At the real limit, 270 ticks on the full field, this has never happened in testing. It is there so that one cell can never hold up a run.
+
+### A detour over cells already flown
+
+![side row](docs/edge_cases/side_row.png)
+
+A two-cell wall splits two rows of the column. The drone has flown the three right-hand cells of the row below the wall and now has to go back left for the rest of that row, over the cells it just flew.
+
+It steps up instead, flies the four cells to the right of the wall, and steps back down beside the wall: two extra steps for four new cells, which it then never has to come round the wall for. This map takes 69 ticks with the swap and 77 without.
