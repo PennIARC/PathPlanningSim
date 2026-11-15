@@ -43,42 +43,48 @@ def round_corners(points, radius, samples=8):
 class Drone:
     """One drone on the grid. All positions are (x, y) cell indices."""
 
-    def __init__(self, index, color, position, liveMap):
+    def __init__(self, index, color, position, obstacles):
         self.index = index
         self.color = color
         self.position = tuple(position)  # (x, y) cell the drone is in
 
-        # The drone's own copy of the obstacles known on the live map. Starts as a
-        # snapshot and then grows with whatever this drone sees itself.
-        self.obstacles = {
-            (x, y)
-            for y, row in enumerate(liveMap.cells)
-            for x, cell in enumerate(row)
-            if cell.isObstacle
-        }
+        self.obstacles = obstacles  # set of (x, y) obstacle cells seen so far, shared by every drone
 
         self.seenCells = set()      # (x, y) of cells this drone has seen
         self.assignedCells = set()  # (x, y) of cells this drone is assigned to search
+        self.visited = {self.position}  # (x, y) of cells this drone has flown over
+        self.trail = [self.position]    # every cell the drone has been in, oldest first
 
-        self.path = [self.position]   # cells to fly through, in order; path[0] is the start cell
-        self.pathIndex = 0            # where along the path the drone currently is
-        self.trail = [self.position]  # every cell the drone has been in, oldest first
-
-    def set_path(self, path):
-        self.path = list(path)
-        self.pathIndex = 0
+        # Planning state, managed by Pathing.Planner
+        self.targets = []       # cells still to fly over, in order
+        self.route = []         # cell-by-cell steps to targets[0]
+        self.detouring = False  # the current route is an A* detour rather than a single step along the sweep
+        self.inTransit = True   # still on the way from the start cell to the first target
+        self.blockedTicks = 0   # ticks in a row spent waiting behind another drone
+        self.yielding = True    # when blocked: this drone is the one that has to give way
+        self.ticksSinceProgress = 0  # ticks since a target was last ticked off
 
     def finished(self):
-        return self.pathIndex >= len(self.path) - 1
+        return not self.targets
 
-    def step(self):
-        """Moves one cell along the path. Returns False if the drone was already at the end."""
-        if self.finished():
-            return False
-        self.pathIndex += 1
-        self.position = self.path[self.pathIndex]
+    def mark_visited(self):
+        """Ticks the current cell off the list of targets, wherever in the list it is."""
+        self.visited.add(self.position)
+        if self.position in self.targets:
+            self.targets.remove(self.position)
+            self.inTransit = False
+            self.ticksSinceProgress = 0
+
+    def advance(self):
+        """Moves one cell along the route."""
+        self.position = self.route.pop(0)
         self.trail.append(self.position)
-        return True
+        self.blockedTicks = 0
+        self.mark_visited()
+
+    def wait(self):
+        """Stays put for a tick because another drone is in the way."""
+        self.blockedTicks += 1
 
     def visible_cells(self, grid):
         """Cells within SIGHT_RANGE of the drone that are inside the grid."""
@@ -131,8 +137,8 @@ class Drone:
         pygame.draw.circle(surface, self.color, self._cell_center(self.position, origin, tile_size), max(2, tile_size * 0.3))
 
 
-def spawn_drones(world, liveMap, numDrones=NUM_DRONES):
-    """Drones side by side, one cell each, centred on the bottom row."""
+def spawn_drones(world, obstacles, numDrones=NUM_DRONES):
+    """Drones side by side, one cell each, centred on the bottom row. `obstacles` is their shared set of seen obstacles."""
     first_x = (world.width - numDrones) // 2
     y = world.height - 1
-    return [Drone(i, DRONE_COLORS[i % len(DRONE_COLORS)], (first_x + i, y), liveMap) for i in range(numDrones)]
+    return [Drone(i, DRONE_COLORS[i % len(DRONE_COLORS)], (first_x + i, y), obstacles) for i in range(numDrones)]

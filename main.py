@@ -17,7 +17,8 @@ BAR_H = 36              # px at the bottom for the buttons
 TILE_GAP = 1            # px between cells, which is what makes the grid visible
 STEPS_PER_SECOND = 20   # auto-step speed while playing
 ALLOCATION_OPACITY = 0.6   # middle grid: how strongly a drone's colour tints its cells
-MAX_OBSTACLE_RATE = 0.5    # right-hand end of the obstacle slider
+MAX_OBSTACLE_RATE = 0.2    # right-hand end of the obstacle slider
+OBSTACLE_RATE_STEP = 0.005 # the slider moves in steps of this size (0.5%)
 HOLD_DELAY = 0.2           # seconds Space or the Step button must be held before it starts ticking continuously
 TRAIL_SUPERSAMPLE = 3      # trails and drones are drawn this many times larger, then shrunk, to smooth their edges
 TRAIL_WIDTH = 1.5          # trail thickness, in scaled-down px
@@ -125,12 +126,13 @@ class Button:
 
 
 class Slider:
-    """Horizontal slider. `value` runs from 0 at the left end to max_value at the right end."""
+    """Horizontal slider. `value` runs from 0 at the left end to max_value at the right end, in multiples of step."""
 
-    def __init__(self, rect, value, max_value):
+    def __init__(self, rect, value, max_value, step):
         self.rect = pygame.Rect(rect)
         self.value = value
         self.max_value = max_value
+        self.step = step
         self.dragging = False
 
     def hit(self, pos):
@@ -139,7 +141,7 @@ class Slider:
     def drag_to(self, x):
         """Moves the handle to pixel x. Returns the new value."""
         fraction = max(0.0, min(1.0, (x - self.rect.left) / self.rect.width))
-        self.value = fraction * self.max_value
+        self.value = round(fraction * self.max_value / self.step) * self.step
         return self.value
 
     def draw(self, surface):
@@ -172,7 +174,7 @@ def main():
     # ---------------- Bottom bar: Play, Step, Reset, Randomize, obstacle slider, then the tick counter
     button_h, gap = 20, 8
     widths = [52, 52, 52, 76]
-    slider_w, slider_label_w, status_w = 90, 86, 60
+    slider_w, slider_label_w, status_w = 90, 96, 60
     bar_w = sum(widths) + gap * len(widths) + slider_w + gap + slider_label_w + status_w
     x = (screen_width - bar_w) // 2
     bar_y = screen_height - BAR_H + (BAR_H - button_h) // 2 - 4
@@ -181,7 +183,7 @@ def main():
         buttons.append(Button((x, bar_y, w, button_h), label))
         x += w + gap
     play_button, step_button, reset_button, randomize_button = buttons
-    slider = Slider((x + 4, bar_y, slider_w, button_h), sim.obstacleRate, MAX_OBSTACLE_RATE)
+    slider = Slider((x + 4, bar_y, slider_w, button_h), sim.obstacleRate, MAX_OBSTACLE_RATE, OBSTACLE_RATE_STEP)
     slider_label_x = slider.rect.right + gap + 4
     status_x = slider_label_x + slider_label_w
     text_y = bar_y + (button_h - font_small.get_height()) / 2
@@ -266,7 +268,7 @@ def main():
         for button in buttons:
             button.draw(screenUI, font_small, (mx, my))
         slider.draw(screenUI)
-        drawText(screenUI, TEXT_COLOR, font_small, slider_label_x, text_y, f"obstacles {round(sim.obstacleRate * 100)}%")
+        drawText(screenUI, TEXT_COLOR, font_small, slider_label_x, text_y, f"obstacles {sim.obstacleRate * 100:.1f}%")
         drawText(screenUI, TEXT_COLOR, font_small, status_x, text_y, f"tick {sim.tick}" + ("  done" if sim.finished() else ""))
         drawText(screenUI, FPS_COLOR, font_regular, 5, screen_height - 30 / (SCALE_DOWN_FACTOR ** (1 / 1.8)),
                  str(round(clock.get_fps())), BACKGROUND_COLOR, 1, antiAliasing=False)
