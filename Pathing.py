@@ -1,6 +1,5 @@
-GRID_WIDTH = 16    # cells across the field
-GRID_HEIGHT = 60   # cells along the field; drones start at the bottom and work upwards
-CELL_SIZE_FT = 5   # 80 ft x 300 ft field
+GRID_WIDTH = 20    # cells across the field
+GRID_HEIGHT = 40   # cells along the field; drones start at the bottom and work upwards
 
 
 class Cell:

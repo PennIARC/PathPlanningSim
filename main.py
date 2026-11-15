@@ -20,6 +20,8 @@ ALLOCATION_OPACITY = 0.6   # middle grid: how strongly a drone's colour tints it
 MAX_OBSTACLE_RATE = 0.5    # right-hand end of the obstacle slider
 HOLD_DELAY = 0.2           # seconds Space or the Step button must be held before it starts ticking continuously
 TRAIL_SUPERSAMPLE = 3      # trails and drones are drawn this many times larger, then shrunk, to smooth their edges
+TRAIL_WIDTH = 1.5          # trail thickness, in scaled-down px
+TRAIL_OPACITY = 0.55       # how strongly a trail shows over the grid
 
 
 def blend(base, over, opacity):
@@ -43,7 +45,7 @@ def allocation_color(sim, x, y):
     return blend(UNSEEN_COLOR, sim.drones[index].color, ALLOCATION_OPACITY)
 
 
-def omnipotent_color(sim, x, y):
+def obstacles_color(sim, x, y):
     """Right grid: every obstacle on the real map, whether or not a drone has seen it."""
     return OBSTACLE_COLOR if sim.world.cells[y][x].isObstacle else UNSEEN_COLOR
 
@@ -51,7 +53,7 @@ def omnipotent_color(sim, x, y):
 VIEWS = [
     ("Drone view", drone_view_color),
     ("Allocation", allocation_color),
-    ("Omnipotent", omnipotent_color),
+    ("Obstacles", obstacles_color),
 ]
 
 
@@ -82,13 +84,15 @@ def draw_grids(surface, sim, tile_size, positions, font):
                 pygame.draw.rect(surface, color_fn(sim, x, y), (ox + x * tile_size, oy + y * tile_size, fill, fill))
 
 
-def draw_drones(surface, layer, sim, tile_size, position):
+def draw_drones(surface, layer, trail_layer, sim, tile_size, position):
     """Draws trails and drones over the left grid of the full-size surface.
 
     The grid is copied onto `layer` enlarged, the trails and drones are drawn
     on top, and the result is shrunk back with smoothing. That anti-aliases
-    them so every curved corner looks the same. The layer is opaque on purpose:
-    a transparent one comes out solid white on the macOS display.
+    them so every curved corner looks the same. Both layers are opaque on
+    purpose: a per-pixel transparent one comes out solid white on the macOS
+    display. Trails get their opacity by drawing them on a second copy of the
+    grid and fading that whole copy over the first.
     """
     scale = SCALE_DOWN_FACTOR * TRAIL_SUPERSAMPLE
     size = (layer.get_width() // TRAIL_SUPERSAMPLE, layer.get_height() // TRAIL_SUPERSAMPLE)
@@ -96,8 +100,11 @@ def draw_drones(surface, layer, sim, tile_size, position):
     pygame.transform.scale(surface.subsurface(area), layer.get_size(), layer)
     # Cell centres are offset by half the gap, since each cell is drawn one gap short of its tile
     origin = (-TILE_GAP / 2 * scale, -TILE_GAP / 2 * scale)
+    trail_layer.blit(layer, (0, 0))
     for drone in sim.drones:
-        drone.draw_trail(layer, origin, tile_size * scale, width=scale)
+        drone.draw_trail(trail_layer, origin, tile_size * scale, width=round(TRAIL_WIDTH * scale))
+    trail_layer.set_alpha(round(TRAIL_OPACITY * 255))
+    layer.blit(trail_layer, (0, 0))
     for drone in sim.drones:
         drone.draw(layer, origin, tile_size * scale)
     surface.blit(pygame.transform.smoothscale(layer, size), area)
@@ -160,6 +167,7 @@ def main():
     tile_size, positions = layout_grids((screen_width, screen_height), sim.world.width, sim.world.height, len(VIEWS))
     drone_layer_scale = tile_size * SCALE_DOWN_FACTOR * TRAIL_SUPERSAMPLE
     drone_layer = pygame.Surface((sim.world.width * drone_layer_scale, sim.world.height * drone_layer_scale)).convert()
+    trail_layer = drone_layer.copy()
 
     # ---------------- Bottom bar: Play, Step, Reset, Randomize, obstacle slider, then the tick counter
     button_h, gap = 20, 8
@@ -250,7 +258,7 @@ def main():
         if version != drawn_version:
             draw_grids(screen2, sim, tile_size, positions, font_small)
             pygame.transform.scale(screen2, screen.get_size(), screen2_scaled)
-            draw_drones(screen2_scaled, drone_layer, sim, tile_size, positions[0])
+            draw_drones(screen2_scaled, drone_layer, trail_layer, sim, tile_size, positions[0])
             drawn_version = version
 
         # ---------------- UI overlay (redrawn every frame)

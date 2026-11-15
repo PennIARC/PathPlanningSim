@@ -1,13 +1,21 @@
 """The project's colours, as [r, g, b] lists, plus what each one is used for."""
 
 
+MUTE = 0.25  # how far the drone and obstacle colours are pulled towards grey (0 = full colour, 1 = fully grey)
+
+
+def _muted(r, g, b):
+    grey = 0.299 * r + 0.587 * g + 0.114 * b  # perceived brightness, so muting keeps each colour as light as it was
+    return [round(c + (grey - c) * MUTE) for c in (r, g, b)]
+
+
 class Palette:
-    """Drone and obstacle colours."""
-    pink = [255, 96, 141]
-    amber = [237, 171, 80]
-    green = [99, 199, 77]
-    cyan = [44, 232, 245]
-    purple = [150, 90, 220]
+    """Drone and obstacle colours, slightly desaturated."""
+    pink = _muted(255, 96, 141)
+    amber = _muted(237, 171, 80)
+    green = _muted(99, 199, 77)
+    cyan = _muted(44, 232, 245)
+    purple = _muted(150, 90, 220)
 
 
 class Neutral:
