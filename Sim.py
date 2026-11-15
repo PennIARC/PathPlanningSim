@@ -4,13 +4,13 @@ import random
 from Drones import NUM_DRONES, spawn_drones
 from Pathing import Grid, boustrophedon_path, path_from, split_into_columns
 
-OBSTACLE_COUNT = 20  # random obstacle cells placed on the real map
+OBSTACLE_RATE = 0.08  # fraction of the real map's cells that are obstacles
 
 
 class Simulation:
-    def __init__(self, numDrones=NUM_DRONES, obstacleCount=OBSTACLE_COUNT, seed=None):
+    def __init__(self, numDrones=NUM_DRONES, obstacleRate=OBSTACLE_RATE, seed=None):
         self.numDrones = numDrones
-        self.obstacleCount = obstacleCount
+        self.obstacleRate = obstacleRate
         self.seed = random.randrange(1_000_000) if seed is None else seed
         self.version = 0  # goes up whenever anything changes, so the visualizer knows when to redraw
         self.reset()
@@ -26,11 +26,33 @@ class Simulation:
         self.sense()
         self.version += 1
 
+    def randomize(self):
+        """New random obstacle layout, and drones back to their starting cells."""
+        self.seed = random.randrange(1_000_000)
+        self.reset()
+
+    def set_obstacle_rate(self, rate):
+        """Changes how much of the map is obstacles (0 to 1), and resets. Returns False if nothing changed."""
+        rate = max(0.0, min(1.0, rate))
+        if self.obstacle_count(rate) == self.obstacle_count():
+            self.obstacleRate = rate
+            return False
+        self.obstacleRate = rate
+        self.reset()
+        return True
+
+    def obstacle_count(self, rate=None):
+        rate = self.obstacleRate if rate is None else rate
+        return round(rate * self.world.width * self.world.height)
+
     def place_obstacles(self):
+        # The seed fixes an order over the free cells and the rate decides how many of them
+        # to take, so changing only the rate adds or removes obstacles without moving the rest.
         rng = random.Random(self.seed)
         spawnCells = {d.position for d in self.drones}
         free = [(x, y) for y in range(self.world.height) for x in range(self.world.width) if (x, y) not in spawnCells]
-        for x, y in rng.sample(free, min(self.obstacleCount, len(free))):
+        rng.shuffle(free)
+        for x, y in free[:self.obstacle_count()]:
             self.world.set_cell(x, y, isObstacle=True)
 
     def plan(self):
@@ -81,4 +103,4 @@ if __name__ == "__main__":
         pass
     total = sim.liveMap.width * sim.liveMap.height
     print(f"finished in {sim.tick} ticks | searched {sim.searched_count()} / {total} cells | "
-          f"found {sim.known_obstacle_count()} / {sim.obstacleCount} obstacles | seed {sim.seed}")
+          f"found {sim.known_obstacle_count()} / {sim.obstacle_count()} obstacles | seed {sim.seed}")

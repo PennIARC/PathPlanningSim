@@ -1,6 +1,34 @@
+from palette import DRONE_COLORS
+
 NUM_DRONES = 4
 SIGHT_RANGE = 1  # cells seen in every direction (including diagonals), plus the cell under the drone
-DRONE_COLORS = [[255, 96, 141], [237, 171, 80], [99, 199, 77], [44, 232, 245]]
+CORNER_RADIUS = 0.3  # how far along each cell a trail's corner starts curving, as a fraction of a cell
+
+
+def round_corners(points, radius, samples=5):
+    """Replaces each sharp corner of a polyline with a short curve.
+
+    The curve starts `radius` before the corner and ends `radius` after it.
+    Returns the new list of points.
+    """
+    if len(points) < 3:
+        return list(points)
+    out = [points[0]]
+    for a, p, b in zip(points, points[1:], points[2:]):
+        ax, ay, bx, by = a[0] - p[0], a[1] - p[1], b[0] - p[0], b[1] - p[1]
+        la, lb = (ax * ax + ay * ay) ** 0.5, (bx * bx + by * by) ** 0.5
+        if la == 0 or lb == 0 or abs(ax * by - ay * bx) < 1e-9:  # straight on (or a repeat): nothing to round
+            out.append(p)
+            continue
+        r = min(radius, la / 2, lb / 2)
+        p1 = (p[0] + ax / la * r, p[1] + ay / la * r)
+        p2 = (p[0] + bx / lb * r, p[1] + by / lb * r)
+        for i in range(samples + 1):
+            t = i / samples
+            out.append(((1 - t) ** 2 * p1[0] + 2 * t * (1 - t) * p[0] + t * t * p2[0],
+                        (1 - t) ** 2 * p1[1] + 2 * t * (1 - t) * p[1] + t * t * p2[1]))
+    out.append(points[-1])
+    return out
 
 
 class Drone:
@@ -71,13 +99,13 @@ class Drone:
         return (origin[0] + (cell[0] + 0.5) * tile_size, origin[1] + (cell[1] + 0.5) * tile_size)
 
     def draw_trail(self, surface, origin, tile_size, width=1):
-        """Draws straight line segments through every cell the drone has been in."""
+        """Draws line segments through every cell the drone has been in, with slightly curved corners."""
         import pygame
 
         if len(self.trail) < 2:
             return
         points = [self._cell_center(cell, origin, tile_size) for cell in self.trail]
-        pygame.draw.lines(surface, self.color, False, points, width)
+        pygame.draw.lines(surface, self.color, False, round_corners(points, tile_size * CORNER_RADIUS), width)
 
     def draw(self, surface, origin, tile_size):
         """Draws the drone as a circle centred on its cell.

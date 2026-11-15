@@ -3,6 +3,8 @@ import time
 import pygame
 
 from Sim import Simulation
+from palette import (ACCENT_COLOR, BACKGROUND_COLOR, BUTTON_COLOR, BUTTON_HOVER_COLOR, OBSTACLE_COLOR, SEEN_COLOR,
+                     TEXT_COLOR, UNSEEN_COLOR, Palette)
 from text import drawText
 from fontDict import fonts
 
@@ -14,22 +16,8 @@ TITLE_H = 16            # px above each grid for its title
 BAR_H = 36              # px at the bottom for the buttons
 TILE_GAP = 1            # px between cells, which is what makes the grid visible
 STEPS_PER_SECOND = 10   # auto-step speed while playing
-ALLOCATION_OPACITY = 0.45  # middle grid: how strongly a drone's colour tints its cells
-
-
-class Endesga:
-    black = [19, 19, 19]
-    white = [255, 255, 255]
-    greyL = [200, 200, 200]
-    my_blue = [32, 36, 46]
-    darker_my_blue = [16, 18, 21]
-    grey_blue = [66, 76, 110]
-    debug_red = [255, 96, 141]
-
-
-UNSEEN_COLOR = Endesga.my_blue
-SEEN_COLOR = [56, 63, 82]         # slightly lighter than UNSEEN_COLOR
-OBSTACLE_COLOR = [150, 90, 220]   # purple
+ALLOCATION_OPACITY = 0.6   # middle grid: how strongly a drone's colour tints its cells
+MAX_OBSTACLE_RATE = 0.5    # right-hand end of the obstacle slider
 
 
 def blend(base, over, opacity):
@@ -80,23 +68,27 @@ def layout_grids(surface_size, grid_w, grid_h, count):
     return tile_size, [(i * column_w + (column_w - w) // 2, top) for i in range(count)]
 
 
-def draw_scene(surface, sim, tile_size, positions, font):
-    """Draws all three grids, plus trails and drones on the left one."""
-    surface.fill(Endesga.darker_my_blue)
+def draw_grids(surface, sim, tile_size, positions, font):
+    """Draws all three grids and their titles at the scaled-down resolution."""
+    surface.fill(BACKGROUND_COLOR)
     fill = tile_size - TILE_GAP
     width, height = sim.world.width, sim.world.height
     for (title, color_fn), (ox, oy) in zip(VIEWS, positions):
-        drawText(surface, Endesga.greyL, font, ox + width * tile_size / 2, oy - TITLE_H, title, justify="center")
+        drawText(surface, TEXT_COLOR, font, ox + width * tile_size / 2, oy - TITLE_H, title, justify="center")
         for y in range(height):
             for x in range(width):
                 pygame.draw.rect(surface, color_fn(sim, x, y), (ox + x * tile_size, oy + y * tile_size, fill, fill))
 
-    # Trails and drones sit on the cell centres, which are offset by the gap
-    origin = (positions[0][0] - TILE_GAP / 2, positions[0][1] - TILE_GAP / 2)
+
+def draw_drones(surface, sim, tile_size, position):
+    """Draws trails and drones over the left grid, at full resolution so the curved corners stay smooth."""
+    s = SCALE_DOWN_FACTOR
+    # Cell centres are offset by half the gap, since each cell is drawn one gap short of its tile
+    origin = ((position[0] - TILE_GAP / 2) * s, (position[1] - TILE_GAP / 2) * s)
     for drone in sim.drones:
-        drone.draw_trail(surface, origin, tile_size)
+        drone.draw_trail(surface, origin, tile_size * s, width=s)
     for drone in sim.drones:
-        drone.draw(surface, origin, tile_size)
+        drone.draw(surface, origin, tile_size * s)
 
 
 class Button:
@@ -108,10 +100,35 @@ class Button:
         return self.rect.collidepoint(pos)
 
     def draw(self, surface, font, mouse_pos):
-        hovered = self.hit(mouse_pos)
-        pygame.draw.rect(surface, Endesga.grey_blue if hovered else Endesga.my_blue, self.rect, 0, 3)
-        pygame.draw.rect(surface, Endesga.grey_blue, self.rect, 1, 3)
-        drawText(surface, Endesga.white, font, self.rect.centerx, self.rect.centery - font.get_height() / 2, self.label, justify="center")
+        pygame.draw.rect(surface, BUTTON_HOVER_COLOR if self.hit(mouse_pos) else BUTTON_COLOR, self.rect, 0, 3)
+        pygame.draw.rect(surface, BUTTON_HOVER_COLOR, self.rect, 1, 3)
+        drawText(surface, TEXT_COLOR, font, self.rect.centerx, self.rect.centery - font.get_height() / 2, self.label, justify="center")
+
+
+class Slider:
+    """Horizontal slider. `value` runs from 0 at the left end to max_value at the right end."""
+
+    def __init__(self, rect, value, max_value):
+        self.rect = pygame.Rect(rect)
+        self.value = value
+        self.max_value = max_value
+        self.dragging = False
+
+    def hit(self, pos):
+        return self.rect.inflate(8, 8).collidepoint(pos)
+
+    def drag_to(self, x):
+        """Moves the handle to pixel x. Returns the new value."""
+        fraction = max(0.0, min(1.0, (x - self.rect.left) / self.rect.width))
+        self.value = fraction * self.max_value
+        return self.value
+
+    def draw(self, surface):
+        track_y = self.rect.centery
+        handle_x = self.rect.left + self.rect.width * self.value / self.max_value
+        pygame.draw.line(surface, BUTTON_HOVER_COLOR, (self.rect.left, track_y), (self.rect.right, track_y), 2)
+        pygame.draw.line(surface, TEXT_COLOR, (self.rect.left, track_y), (handle_x, track_y), 2)
+        pygame.draw.circle(surface, ACCENT_COLOR, (handle_x, track_y), 4)
 
 
 def main():
@@ -130,12 +147,22 @@ def main():
     sim = Simulation()
     tile_size, positions = layout_grids((screen_width, screen_height), sim.world.width, sim.world.height, len(VIEWS))
 
-    button_w, button_h, button_gap = 56, 20, 8
-    button_y = screen_height - BAR_H + (BAR_H - button_h) // 2 - 4
-    button_x = screen_width // 2 - (button_w * 3 + button_gap * 2) // 2
-    play_button = Button((button_x, button_y, button_w, button_h), "Play")
-    step_button = Button((button_x + button_w + button_gap, button_y, button_w, button_h), "Step")
-    reset_button = Button((button_x + (button_w + button_gap) * 2, button_y, button_w, button_h), "Reset")
+    # ---------------- Bottom bar: Play, Step, Reset, Randomize, obstacle slider, then the tick counter
+    button_h, gap = 20, 8
+    widths = [52, 52, 52, 76]
+    slider_w, slider_label_w, status_w = 90, 86, 60
+    bar_w = sum(widths) + gap * len(widths) + slider_w + gap + slider_label_w + status_w
+    x = (screen_width - bar_w) // 2
+    bar_y = screen_height - BAR_H + (BAR_H - button_h) // 2 - 4
+    buttons = []
+    for label, w in zip(["Play", "Step", "Reset", "Randomize"], widths):
+        buttons.append(Button((x, bar_y, w, button_h), label))
+        x += w + gap
+    play_button, step_button, reset_button, randomize_button = buttons
+    slider = Slider((x + 4, bar_y, slider_w, button_h), sim.obstacleRate, MAX_OBSTACLE_RATE)
+    slider_label_x = slider.rect.right + gap + 4
+    status_x = slider_label_x + slider_label_w
+    text_y = bar_y + (button_h - font_small.get_height()) / 2
 
     pygame.mouse.set_visible(False)
     playing = False
@@ -169,6 +196,17 @@ def main():
                 elif reset_button.hit((mx, my)):
                     sim.reset()
                     playing = False
+                elif randomize_button.hit((mx, my)):
+                    sim.randomize()
+                    playing = False
+                elif slider.hit((mx, my)):
+                    slider.dragging = True
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                slider.dragging = False
+
+        # Dragging the slider changes the obstacles, which puts the drones back at the start
+        if slider.dragging and sim.set_obstacle_rate(slider.drag_to(mx)):
+            playing = False
 
         # ---------------- Simulation: auto-step while playing
         if playing:
@@ -183,20 +221,22 @@ def main():
         # ---------------- Grids: redraw and rescale only when the sim changed
         version = (sim.version, sim.world.version, sim.liveMap.version)
         if version != drawn_version:
-            draw_scene(screen2, sim, tile_size, positions, font_small)
+            draw_grids(screen2, sim, tile_size, positions, font_small)
             pygame.transform.scale(screen2, screen.get_size(), screen2_scaled)
+            draw_drones(screen2_scaled, sim, tile_size, positions[0])
             drawn_version = version
 
         # ---------------- UI overlay (redrawn every frame)
         screenUI.fill((0, 0, 0, 0))
-        for button in (play_button, step_button, reset_button):
+        for button in buttons:
             button.draw(screenUI, font_small, (mx, my))
-        status = f"tick {sim.tick}" + ("  done" if sim.finished() else "")
-        drawText(screenUI, Endesga.greyL, font_small, reset_button.rect.right + 12, button_y + (button_h - font_small.get_height()) / 2, status)
-        drawText(screenUI, Endesga.debug_red, font_regular, 5, screen_height - 30 / (SCALE_DOWN_FACTOR ** (1 / 1.8)),
-                 str(round(clock.get_fps())), Endesga.black, 1, antiAliasing=False)
-        pygame.draw.circle(screenUI, Endesga.black, (mx + 1, my + 1), 2, 1)
-        pygame.draw.circle(screenUI, Endesga.white, (mx, my), 2, 1)
+        slider.draw(screenUI)
+        drawText(screenUI, TEXT_COLOR, font_small, slider_label_x, text_y, f"obstacles {round(sim.obstacleRate * 100)}%")
+        drawText(screenUI, TEXT_COLOR, font_small, status_x, text_y, f"tick {sim.tick}" + ("  done" if sim.finished() else ""))
+        drawText(screenUI, ACCENT_COLOR, font_regular, 5, screen_height - 30 / (SCALE_DOWN_FACTOR ** (1 / 1.8)),
+                 str(round(clock.get_fps())), Palette.navy_dark, 1, antiAliasing=False)
+        pygame.draw.circle(screenUI, Palette.navy_dark, (mx + 1, my + 1), 2, 1)
+        pygame.draw.circle(screenUI, ACCENT_COLOR, (mx, my), 2, 1)
 
         screen.blit(screen2_scaled, (0, 0))
         screen.blit(pygame.transform.scale(screenUI, screen.get_size()), (0, 0))
