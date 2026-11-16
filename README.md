@@ -34,7 +34,7 @@ The field is cut into one vertical column per drone. Each drone sweeps its colum
 - Drones start side by side at the bottom centre. The walk to their own column never reassigns cells.
 - Before moving up a row, a drone checks for cells it skipped lower down. If the shortest route to one runs only through cells already seen, and the trip is no longer than the rows it still has to climb, it goes back for it then instead of at the end.
 - Before moving up a row, a drone also checks whether another drone is closer to the cells it is leaving behind. Each connected group of them goes to whichever drone has the shortest trip to it. Unseen cells count as free in that trip, so the owner keeps the cells while a way in may still exist.
-- Every tick the work is shared out. If two neighbours' remaining work differs by more than one cell, the lighter one takes half the difference from the edge of the other's column, furthest up the field first.
+- Every tick the work is shared out. If two neighbours' remaining work differs by more than one cell, the lighter one takes half the difference from the edge of the other's column. Cells come first from the rows where the boundary has moved least from the original split, and among those from the rows furthest up the field, so the boundary stays straight.
 - Among equally short routes, a drone takes the one over the most cells that another drone has flown and it has not, so a second pair of eyes sees them.
 - When a detour runs sideways over cells already flown, and the same stretch one row up or down is 3 or more of the drone's unvisited cells, the drone flies that row instead and steps back at the end. That costs two extra steps. Where the route was about to turn onto that row anyway it costs nothing, so one new cell is enough.
 - A drone that finishes takes over the cells the busiest drone would reach last, as many as it can finish by the time that drone is done. If nobody needs help it waits in its last cell.
@@ -56,6 +56,7 @@ Every number the planner depends on, all in `Planner` in `Pathing.py`, and where
 | `HELP_MIN` | 6 cells | A finished drone only helps a drone with at least this many cells left. | Picked. 2, 6 and 20 finished within noise of each other. |
 | `HANDOVER_WEIGHT` | 1.0 | Cells a drone is leaving behind go to another drone if that drone's trip to them, times this, is shorter than the owner's. 0 switches handing over off. | Picked as the plain comparison, then checked. 0.75, 1, 1.5 and 2 finished default maps within a tick of each other. Switching it off makes no difference on default maps and is 1.6% slower on dense, clustered maps and 3% slower on very dense ones. |
 | `SIDE_ROW_MIN` | 3 cells | A sideways stretch of a detour over already-flown cells moves to the row above or below, for two extra steps, if that covers at least this many of the drone's unvisited cells. 0 switches it off. | Tuned. Off, 2, 3, 4 and 6 finished default maps in 488, 480, 476, 477 and 487 ticks on average (30 maps) and sparse maps in 478, 474, 467, 469 and 476. The open field is 2 ticks slower with it on (455 against 453). Where the route turns onto that row anyway the swap is free and one new cell is enough; asking for 3 there as well was 2 ticks slower on default maps. |
+| Boundary shift order | least shifted row, then furthest up | Which cells move when neighbours even out their work: one per row, from the rows where the boundary is closest to the original split. | Measured against taking the top row first, which hollowed out the top rows into long sideways slivers. Default maps went from 476 to 468 ticks on average (30 maps), sparse from 467 to 461, dense from 520 to 508. |
 | Tie-breaks | new eyes, left, lower index | Two equally short routes: the one over more cells that only other drones have flown. Two equally cheap cells: the left one. Two drones with equal right of way: the lower index. | Picked. The first gives a cell a second look for free; the others make runs repeatable. |
 
 ## Edge cases
@@ -182,7 +183,7 @@ A finished drone takes over the cells the busiest drone would reach last, as man
 
 A pocket in yellow's column is closed on the top, right and bottom and opens only towards red's column, and a short wall runs up the boundary above it. Yellow climbs past on the far side, and left alone would fly all the way back round for it at the end.
 
-Each time yellow is about to move up, any drone closer to the cells it is leaving behind takes them. Red is beside the opening, so the pocket's rows join red's sweep. Red then has more to do, so the boundary shift gives yellow cells from the top of red's column. The run takes 128 ticks instead of 140.
+Each time yellow is about to move up, any drone closer to the cells it is leaving behind takes them. Red is beside the opening, so the pocket's rows join red's sweep. Red then has more to do, so the boundary shift gives yellow cells from the edge of red's column in the rows above the wall. The run takes 125 ticks instead of 138.
 
 ### A taken cell that a re-plan would bypass
 

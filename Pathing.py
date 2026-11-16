@@ -155,6 +155,9 @@ class Planner:
         self.grid = grid            # the live map; holds which drone each cell is assigned to
         self.drones = drones
         self.obstacles = obstacles  # shared set of (x, y) obstacle cells the drones have seen so far
+        # First x of every drone's strip but the leftmost, as the field is first split. Set here, not in assign(),
+        # because stepping back in the visualizer builds a new Planner without assigning again.
+        self.boundaries = [xs[0] for xs in split_into_columns(grid.width, len(drones))[1:]]
 
     def assign(self):
         """Gives each drone a vertical strip of the field; every cell in it becomes a target."""
@@ -584,9 +587,12 @@ class Planner:
 
         The candidates are the heavier drone's cell nearest the lighter drone in
         every row above both of them, where that cell touches the lighter
-        drone's cells. Half the difference in work is moved, furthest up the
-        field first, which leaves the two with the same amount. Those rows
-        simply become one cell wider for the lighter drone.
+        drone's cells. Half the difference in work is moved, which leaves the
+        two with the same amount. Cells come first from the rows where the
+        boundary has moved least from the original split (rows where it moved
+        the other way count as least of all), and among those from the rows
+        furthest up the field. So the boundary stays as straight and as close
+        to the original columns as the loads allow.
         """
         heavy, light = (left, right) if loads[left] >= loads[right] else (right, left)
         gap = loads[heavy] - loads[light]
@@ -598,14 +604,16 @@ class Planner:
         for x, y in heavy.targets:
             if y < top:
                 rows[y].append(x)
+        original = self.boundaries[left.index]  # x of the right-hand drone's first cell when the field was first split
         strip = []
         for y, xs in rows.items():
             x = max(xs) if towards == 1 else min(xs)
             beside = (x + towards, y)
             if self.grid.in_bounds(*beside) and self.grid.cells[y][beside[0]].droneAllocationIndex == light.index:
-                strip.append((x, y))
-        strip.sort(key=lambda cell: cell[1])  # furthest up the field first
-        strip = strip[:int(gap // 2)]         # each cell moved closes the gap by two
+                shifted = original - beside[0] if towards == 1 else beside[0] + 1 - original  # cells the lighter drone already holds past the original line
+                strip.append((shifted, y, x))
+        strip.sort()  # least shifted first, then furthest up the field
+        strip = [(x, y) for _, y, x in strip[:int(gap // 2)]]  # each cell moved closes the gap by two
         if strip:
             self._transfer(strip, heavy, light)
 
