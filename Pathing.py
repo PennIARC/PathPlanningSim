@@ -590,9 +590,11 @@ class Planner:
         drone's cells. Half the difference in work is moved, which leaves the
         two with the same amount. Cells come first from the rows where the
         boundary has moved least from the original split (rows where it moved
-        the other way count as least of all), and among those from the rows
-        furthest up the field. So the boundary stays as straight and as close
-        to the original columns as the loads allow.
+        the other way count as least of all). Among equally shifted rows,
+        new cells are taken from the row furthest up the field, and cells
+        being given back come from the row furthest down. So the rows that
+        are shifted stay together as one block at the top, and the boundary
+        stays as straight and as close to the original columns as the loads allow.
         """
         heavy, light = (left, right) if loads[left] >= loads[right] else (right, left)
         gap = loads[heavy] - loads[light]
@@ -611,9 +613,9 @@ class Planner:
             beside = (x + towards, y)
             if self.grid.in_bounds(*beside) and self.grid.cells[y][beside[0]].droneAllocationIndex == light.index:
                 shifted = original - beside[0] if towards == 1 else beside[0] + 1 - original  # cells the lighter drone already holds past the original line
-                strip.append((shifted, y, x))
+                strip.append((shifted, y if shifted >= 0 else -y, x, y))  # giving back: lowest row of the block first
         strip.sort()  # least shifted first, then furthest up the field
-        strip = [(x, y) for _, y, x in strip[:int(gap // 2)]]  # each cell moved closes the gap by two
+        strip = [(x, y) for _, _, x, y in strip[:int(gap // 2)]]  # each cell moved closes the gap by two
         if strip:
             self._transfer(strip, heavy, light)
 
