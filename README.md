@@ -61,240 +61,220 @@ Every number the planner depends on, all in `Planner` in `Pathing.py`, and where
 
 ## Edge cases
 
-<br>
-
-### One drone sweeping its column
-
-#### A cell in the sweep is an obstacle
-
-![blocked cell](docs/edge_cases/blocked_cell.png)
-
-The drone is sweeping a two-wide column and the next cell up, on the left, turns out to be an obstacle.
-
-It drops that cell and runs A* to the next one it needs, on the right of the same row. The shortest way there is back through the cell it just left, so the trail doubles up.
-
-<br>
-
-#### Obstacles on the first row
-
-![blocked start](docs/edge_cases/blocked_start.png)
-
-Three obstacles fill the bottom row of red's column, so the first cells of its sweep do not exist.
-
-The first row gets no special treatment. Red heads for the cheapest end of the first row it can reach, one row up, and starts sweeping there without waiting.
-
-<br>
-
-#### A cell that cannot be reached
-
-![unreachable cell](docs/edge_cases/unreachable_cell.png)
-
-A free cell on the top row of yellow's column is shut in by three obstacles and the edge of the field.
-
-A* finds no route to it, so yellow drops it for good and finishes without it. The cell is seen from next door but never flown over.
-
-<br>
-
-#### Arriving at the far end of a row
-
-![nearer end](docs/edge_cases/nearer_end.png)
-
-A row of obstacles leaves one gap, at the left edge, so the drone comes up into the next row at its left end. A fixed left-right zigzag would have it start that row from the right.
-
-The drone picks whichever end of a row is fewer A* steps away. It sweeps from the left and saves a crossing.
-
-<br>
-
-#### A row cut in two by one obstacle
-
-![split row](docs/edge_cases/split_row.png)
-
-An obstacle splits a row into a single cell on the left and four cells on the right. The drone arrives on the left.
-
-It flies the single cell, goes over the obstacle through the row above and drops back down to finish the right-hand part before carrying on upwards. A cell below the drone costs only its steps, while every row up costs 3 more, so a row is not left half done.
-
-<br>
-
-#### A wall up the middle of a column
-
-![wall](docs/edge_cases/wall.png)
-
-A wall of obstacles splits six rows of the drone's column into a left half and a right half. Taking rows strictly in order would mean flying round the end of the wall twice for every row.
-
-Moving up a row costs 3 extra steps in the drone's scoring, far less than a trip round the wall. The drone starts up the right half, goes back for the left half after two rows while that is still a short trip, sweeps it to the top of the wall, crosses once, and finishes the right half. The arrows mark where it turns back.
-
-<br>
-
-#### A detour over cells already flown
-
-![side row](docs/edge_cases/side_row.png)
-
-A two-cell wall splits two rows of the column. The drone has flown the three right-hand cells of the row below the wall and now has to go back left for the rest of that row, over the cells it just flew.
-
-It steps up instead, flies the four cells to the right of the wall, and steps back down beside the wall: two extra steps for four new cells, which it then never has to come round the wall for. This map takes 69 ticks with the swap and 77 without.
-
-<br>
-
-#### A walled-off area that gets skipped
-
-![skipped area](docs/edge_cases/skipped_area.png)
-
-An area on the left is walled off on its right and on top, so it can only be entered from below. The drone finishes a row on the far side of the wall and starts climbing there. Left alone, it would sweep to the top of the field and then fly all the way back down for the area.
-
-Before each move up it checks the skipped cells. Here the known way back, round the foot of the wall, is 5 steps and nothing unseen could be shorter, with 12 rows still to climb, so it goes back after two rows. That saves 10 ticks on this map. Had an unseen cell offered a possible shortcut, it would have kept sweeping along the wall until that cell was seen.
-
-<br>
-
-#### A cell that takes too long to reach
-
-![stalled](docs/edge_cases/stalled.png)
-
-For this picture the stall limit was cut from 51 ticks to 3. The drone sets off round the foot of the wall for a cell on the other side, and the trip is longer than that.
-
-After 4 ticks without flying over a new cell it drops the cell it was heading for and picks the next one, which leaves one cell unflown. At the real limit, 270 ticks on the full field, this has never happened in testing. It is there so that one cell can never hold up a run.
-
-<br>
-
-### Crossing a neighbour's column
-
-#### The walk to the starting column
-
-![start walk](docs/edge_cases/start_walk.png)
-
-Drones start side by side in the middle of the bottom row, so the two outer ones cross a neighbour's column to reach their own.
-
-That walk is transit only. The cells crossed stay with their owner, who still sweeps them, and the usual collision rules apply.
-
-<br>
-
-#### A detour through a neighbour's column
-
-![neighbour cells](docs/edge_cases/neighbour_cells.png)
-
-An obstacle blocks yellow at the left edge of its column, and its detour crosses three cells of red's column. Red has already swept two of them and would not reach the third for a while.
-
-Yellow flies straight through the two swept cells and nothing changes hands. The third is reassigned to yellow, which covers it on the way; red takes it off its own sweep and never visits it.
-
-<br>
-
-#### Both drones due at a shared cell on the same tick
-
-![same tick](docs/edge_cases/same_tick.png)
-
-Yellow is crossing green's column to get round obstacles, and would arrive at one of green's cells on the tick green is due there.
-
-The cell stays green's and green flies as planned. Yellow waits one tick in the cell before it, then follows green through. The dot marks where it waits.
-
-<br>
-
-#### A taken cell that a re-plan would bypass
-
-![kept stop](docs/edge_cases/kept_stop.png)
-
-Green's way up is walled off, so it plans a detour through yellow's column and takes two of yellow's top-row cells that the route crosses. One of them turns out to be an obstacle, which kills the detour, and green has to go the long way round its own side.
-
-The other taken cell is no longer on the way to anything, but yellow has dropped it. Green keeps it as a required stop: it comes round, steps one cell out along the top row to fly over it, and comes back.
-
-<br>
-
-#### New eyes over the same eyes
-
-![new eyes](docs/edge_cases/new_eyes.png)
-
-Red has flown into a one-cell pocket and heads for its next row, three rows up. Two routes are equally short. One runs over a cell only red has flown; the other over a cell on the edge of yellow's column that only yellow has flown.
-
-Red takes the one through yellow's cell, which gives that cell a second look, where re-flying its own cell would add nothing. This only settles ties between equally short routes and never makes a route longer.
-
-<br>
-
-### Drones in each other's way
-
-#### Two drones meet head-on
-
-![head on](docs/edge_cases/head_on.png)
-
-Red's last cell is cut off from the rest of its column by obstacles, so red comes down the edge of yellow's column to reach it, just as yellow is coming up that edge. They are face to face, each wanting the cell the other is in.
-
-Drones never swap places. The planner spots the meeting before either drone moves. Both are on detours, so the lower index, red, has right of way, and yellow re-plans through the next cell over. Neither loses a tick.
-
-<br>
-
-#### A gap one cell wide
-
-![corridor](docs/edge_cases/corridor.png)
-
-The top row of yellow's column can only be reached through a single cell at the edge of red's column. Yellow goes in as red is coming out.
-
-There is no way round. The drone without right of way, yellow, backs out one cell, red comes through, and yellow goes in after it.
-
-<br>
-
-#### Boxed in at the start
-
-![boxed in start](docs/edge_cases/boxed_in_start.png)
-
-Red's walk along the bottom row to its own column runs into a dead end, with obstacles ahead and above. The only way out is back through the cell yellow is about to move into.
-
-Red has nowhere to step aside to, so yellow moves out of the way even though it has right of way. Red comes out and goes round, and yellow carries on.
-
-<br>
-
-#### Stuck behind a drone that is not moving
-
-![wait then go round](docs/edge_cases/wait_then_go_round.png)
-
-Blue is cutting through the middle of the field to get round obstacles on its walk out. The cell ahead holds green, which is itself held up by yellow.
-
-Blue waits one tick in case the way clears. Green is still there, so on the next tick blue plans a route around the cell green is in and carries on.
-
-<br>
-
-#### The next cell has another drone in it
-
-![occupied target](docs/edge_cases/occupied_target.png)
-
-Green's next cell is one step away, but yellow and then red pass through it on their way round an obstacle.
-
-Green waits a tick, then drops the cell instead of queueing for it, since a drone is flying over it anyway. Green carries on with its sweep and never goes back for that cell.
-
-<br>
-
-#### A finished drone parked in the way
-
-![parked drone](docs/edge_cases/parked_drone.png)
-
-Red finishes first and parks in its last cell, at the top of its column. Yellow's last cell is behind two obstacles, and the only way to it starts with the cell red is sitting in.
-
-A finished drone with nobody to help stays put. Once yellow has waited two ticks behind it, red steps aside to the nearest cell off yellow's route, one cell to the left, and yellow goes through and finishes.
-
-<br>
-
-### Sharing the work
-
-#### One drone has more to do than its neighbour
-
-![boundary shift](docs/edge_cases/boundary_shift.png)
-
-Yellow's column is one cell wider than red's, which leaves it 14 more cells to cover.
-
-Neighbours compare their remaining work every tick. Red takes half the difference, seven cells: the nearest cell of yellow's column in each of the top seven rows. Its rows are one cell wider from there up, and the two finish on the same tick.
-
-<br>
-
-#### A drone finishes early
-
-![finished drone helps](docs/edge_cases/finished_drone_helps.png)
-
-Red's column is one cell narrower than yellow's, so red finishes while yellow still has most of its top row to do. Boundary shifting is switched off for this picture.
-
-A finished drone takes over the cells the busiest drone would reach last, as many as it can finish by the time that drone is done. Red flies on into yellow's top row and takes four cells, and the two finish within two ticks of each other.
-
-<br>
-
-#### Cells walled off from their own drone
-
-![pocket handover](docs/edge_cases/pocket_handover.png)
-
-A pocket in yellow's column is closed on the top, right and bottom and opens only towards red's column, and a short wall runs up the boundary above it. Yellow climbs past on the far side, and left alone would fly all the way back round for it at the end.
-
-Each time yellow is about to move up, any drone closer to the cells it is leaving behind takes them. Red is beside the opening, so the pocket's rows join red's sweep. Red then has more to do, so the boundary shift gives yellow cells from the edge of red's column in the rows above the wall. The run takes 125 ticks instead of 138.
+Click a group to open it. In each picture a solid arrow is the step the drone takes and a dotted arrow is the step it would have taken without the rule; a loop arrow means it waits in that cell.
+
+<details>
+<summary><h3>One drone sweeping its column</h3></summary>
+
+<table>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/blocked_cell.png" alt="blocked cell"></td>
+<td>
+<h4>A cell in the sweep is an obstacle</h4>
+<p>The drone is sweeping a two-wide column and the next cell up, on the left, turns out to be an obstacle.</p>
+<p>It drops that cell and runs A* to the next one it needs, on the right of the same row. The shortest way there is back through the cell it just left, so the trail doubles up.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/blocked_start.png" alt="blocked start"></td>
+<td>
+<h4>Obstacles on the first row</h4>
+<p>Three obstacles fill the bottom row of red's column, so the first cells of its sweep do not exist.</p>
+<p>The first row gets no special treatment. Red heads for the cheapest end of the first row it can reach, one row up, and starts sweeping there without waiting.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/unreachable_cell.png" alt="unreachable cell"></td>
+<td>
+<h4>A cell that cannot be reached</h4>
+<p>A free cell on the top row of yellow's column is shut in by three obstacles and the edge of the field.</p>
+<p>A* finds no route to it, so yellow drops it for good and finishes without it. The cell is seen from next door but never flown over.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/nearer_end.png" alt="nearer end"></td>
+<td>
+<h4>Arriving at the far end of a row</h4>
+<p>A row of obstacles leaves one gap, at the left edge, so the drone comes up into the next row at its left end. A fixed left-right zigzag would have it start that row from the right.</p>
+<p>The drone picks whichever end of a row is fewer A* steps away. It sweeps from the left and saves a crossing.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/split_row.png" alt="split row"></td>
+<td>
+<h4>A row cut in two by one obstacle</h4>
+<p>An obstacle splits a row into a single cell on the left and four cells on the right. The drone arrives on the left.</p>
+<p>It flies the single cell, goes over the obstacle through the row above and drops back down to finish the right-hand part before carrying on upwards. A cell below the drone costs only its steps, while every row up costs 3 more, so a row is not left half done.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/wall.png" alt="wall"></td>
+<td>
+<h4>A wall up the middle of a column</h4>
+<p>A wall of obstacles splits six rows of the drone's column into a left half and a right half. Taking rows strictly in order would mean flying round the end of the wall twice for every row.</p>
+<p>Moving up a row costs 3 extra steps in the drone's scoring, far less than a trip round the wall. The drone starts up the right half, goes back for the left half after two rows while that is still a short trip, sweeps it to the top of the wall, crosses once, and finishes the right half. The arrows mark where it turns back.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/side_row.png" alt="side row"></td>
+<td>
+<h4>A detour over cells already flown</h4>
+<p>A two-cell wall splits two rows of the column. The drone has flown the three right-hand cells of the row below the wall and now has to go back left for the rest of that row, over the cells it just flew.</p>
+<p>It steps up instead, flies the four cells to the right of the wall, and steps back down beside the wall: two extra steps for four new cells, which it then never has to come round the wall for. This map takes 69 ticks with the swap and 77 without.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/skipped_area.png" alt="skipped area"></td>
+<td>
+<h4>A walled-off area that gets skipped</h4>
+<p>An area on the left is walled off on its right and on top, so it can only be entered from below. The drone finishes a row on the far side of the wall and starts climbing there. Left alone, it would sweep to the top of the field and then fly all the way back down for the area.</p>
+<p>Before each move up it checks the skipped cells. Here the known way back, round the foot of the wall, is 5 steps and nothing unseen could be shorter, with 12 rows still to climb, so it goes back after two rows. That saves 10 ticks on this map. Had an unseen cell offered a possible shortcut, it would have kept sweeping along the wall until that cell was seen.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/stalled.png" alt="stalled"></td>
+<td>
+<h4>A cell that takes too long to reach</h4>
+<p>For this picture the stall limit was cut from 51 ticks to 3. The drone sets off round the foot of the wall for a cell on the other side, and the trip is longer than that.</p>
+<p>After 4 ticks without flying over a new cell it drops the cell it was heading for and picks the next one, which leaves one cell unflown. At the real limit, 270 ticks on the full field, this has never happened in testing. It is there so that one cell can never hold up a run.</p>
+</td>
+</tr>
+</table>
+
+</details>
+
+<details>
+<summary><h3>Crossing a neighbour's column</h3></summary>
+
+<table>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/start_walk.png" alt="start walk"></td>
+<td>
+<h4>The walk to the starting column</h4>
+<p>Drones start side by side in the middle of the bottom row, so the two outer ones cross a neighbour's column to reach their own.</p>
+<p>That walk is transit only. The cells crossed stay with their owner, who still sweeps them, and the usual collision rules apply.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/neighbour_cells.png" alt="neighbour cells"></td>
+<td>
+<h4>A detour through a neighbour's column</h4>
+<p>An obstacle blocks yellow at the left edge of its column, and its detour crosses three cells of red's column. Red has already swept two of them and would not reach the third for a while.</p>
+<p>Yellow flies straight through the two swept cells and nothing changes hands. The third is reassigned to yellow, which covers it on the way; red takes it off its own sweep and never visits it.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/same_tick.png" alt="same tick"></td>
+<td>
+<h4>Both drones due at a shared cell on the same tick</h4>
+<p>Yellow is crossing green's column to get round obstacles, and would arrive at one of green's cells on the tick green is due there.</p>
+<p>The cell stays green's and green flies as planned. Yellow waits one tick in the cell before it, then follows green through. The loop arrow marks where it waits.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/kept_stop.png" alt="kept stop"></td>
+<td>
+<h4>A taken cell that a re-plan would bypass</h4>
+<p>Green's way up is walled off, so it plans a detour through yellow's column and takes two of yellow's top-row cells that the route crosses. One of them turns out to be an obstacle, which kills the detour, and green has to go the long way round its own side.</p>
+<p>The other taken cell is no longer on the way to anything, but yellow has dropped it. Green keeps it as a required stop: it comes round, steps one cell out along the top row to fly over it, and comes back.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/new_eyes.png" alt="new eyes"></td>
+<td>
+<h4>New eyes over the same eyes</h4>
+<p>Red has flown into a one-cell pocket and heads for its next row, three rows up. Two routes are equally short. One runs over a cell only red has flown; the other over a cell on the edge of yellow's column that only yellow has flown.</p>
+<p>Red takes the one through yellow's cell, which gives that cell a second look, where re-flying its own cell would add nothing. This only settles ties between equally short routes and never makes a route longer.</p>
+</td>
+</tr>
+</table>
+
+</details>
+
+<details>
+<summary><h3>Drones in each other's way</h3></summary>
+
+<table>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/head_on.png" alt="head on"></td>
+<td>
+<h4>Two drones meet head-on</h4>
+<p>Red's last cell is cut off from the rest of its column by obstacles, so red comes down the edge of yellow's column to reach it, just as yellow is coming up that edge. They are face to face, each wanting the cell the other is in.</p>
+<p>Drones never swap places. The planner spots the meeting before either drone moves. Both are on detours, so the lower index, red, has right of way, and yellow re-plans through the next cell over. Neither loses a tick.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/corridor.png" alt="corridor"></td>
+<td>
+<h4>A gap one cell wide</h4>
+<p>The top row of yellow's column can only be reached through a single cell at the edge of red's column. Yellow goes in as red is coming out.</p>
+<p>There is no way round. The drone without right of way, yellow, backs out one cell, red comes through, and yellow goes in after it.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/boxed_in_start.png" alt="boxed in start"></td>
+<td>
+<h4>Boxed in at the start</h4>
+<p>Red's walk along the bottom row to its own column runs into a dead end, with obstacles ahead and above. The only way out is back through the cell yellow is about to move into.</p>
+<p>Red has nowhere to step aside to, so yellow moves out of the way even though it has right of way. Red comes out and goes round, and yellow carries on.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/wait_then_go_round.png" alt="wait then go round"></td>
+<td>
+<h4>Stuck behind a drone that is not moving</h4>
+<p>Blue is cutting through the middle of the field to get round obstacles on its walk out. The cell ahead holds green, which is itself held up by yellow.</p>
+<p>Blue waits one tick in case the way clears. Green is still there, so on the next tick blue plans a route around the cell green is in and carries on.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/occupied_target.png" alt="occupied target"></td>
+<td>
+<h4>The next cell has another drone in it</h4>
+<p>Green's next cell is one step away, but yellow and then red pass through it on their way round an obstacle.</p>
+<p>Green waits a tick, then drops the cell instead of queueing for it, since a drone is flying over it anyway. Green carries on with its sweep and never goes back for that cell.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/parked_drone.png" alt="parked drone"></td>
+<td>
+<h4>A finished drone parked in the way</h4>
+<p>Red finishes first and parks in its last cell, at the top of its column. Yellow's last cell is behind two obstacles, and the only way to it starts with the cell red is sitting in.</p>
+<p>A finished drone with nobody to help stays put. Once yellow has waited two ticks behind it, red steps aside to the nearest cell off yellow's route, one cell to the left, and yellow goes through and finishes.</p>
+</td>
+</tr>
+</table>
+
+</details>
+
+<details>
+<summary><h3>Sharing the work</h3></summary>
+
+<table>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/boundary_shift.png" alt="boundary shift"></td>
+<td>
+<h4>One drone has more to do than its neighbour</h4>
+<p>Yellow's column is one cell wider than red's, which leaves it 14 more cells to cover.</p>
+<p>Neighbours compare their remaining work every tick. Red takes half the difference, seven cells: the nearest cell of yellow's column in each of the top seven rows. Its rows are one cell wider from there up, and the two finish on the same tick.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/finished_drone_helps.png" alt="finished drone helps"></td>
+<td>
+<h4>A drone finishes early</h4>
+<p>Red's column is one cell narrower than yellow's, so red finishes while yellow still has most of its top row to do. Boundary shifting is switched off for this picture.</p>
+<p>A finished drone takes over the cells the busiest drone would reach last, as many as it can finish by the time that drone is done. Red flies on into yellow's top row and takes four cells, and the two finish within two ticks of each other.</p>
+</td>
+</tr>
+<tr>
+<td width="42%" align="center"><img src="docs/edge_cases/pocket_handover.png" alt="pocket handover"></td>
+<td>
+<h4>Cells walled off from their own drone</h4>
+<p>A pocket in yellow's column is closed on the top, right and bottom and opens only towards red's column, and a short wall runs up the boundary above it. Yellow climbs past on the far side, and left alone would fly all the way back round for it at the end.</p>
+<p>Each time yellow is about to move up, any drone closer to the cells it is leaving behind takes them. Red is beside the opening, so the pocket's rows join red's sweep. Red then has more to do, so the boundary shift gives yellow cells from the edge of red's column in the rows above the wall. The run takes 125 ticks instead of 138.</p>
+</td>
+</tr>
+</table>
+
+</details>

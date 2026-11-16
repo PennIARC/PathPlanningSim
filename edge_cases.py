@@ -7,9 +7,10 @@ saved to docs/edge_cases/<name>.png. Run from the project folder:
     .venv/bin/python3 edge_cases.py              # every picture
     .venv/bin/python3 edge_cases.py wall         # one picture, and print where each drone is on every tick
 
-Most pictures carry two arrows at the cell where the rule changes what a drone
-does: a white one for the step it takes and a black one for the step it would
-have taken without the rule. A white dot means it waits there instead.
+Most pictures carry two arrows, in the drone's colour, at the cell where the
+rule changes what it does: a solid one for the step it takes and a dotted one
+for the step it would have taken without the rule. A loop arrow means it waits
+in that cell instead.
 
 To document a new edge case: add an entry to CASES, run this, then describe
 it in the "Edge cases" section of README.md.
@@ -18,6 +19,7 @@ The maps are tuned to the planner as it is. After changing a planner rule or
 constant, re-run this and check each picture still shows what its README
 entry says: a map can stop producing its situation.
 """
+import math
 import os
 import sys
 
@@ -35,9 +37,14 @@ from Sim import Simulation
 
 OUT_DIR = os.path.join("docs", "edge_cases")
 TILE = 20  # px per cell before the 2x upscale, so cells come out 40 px wide
-TAKEN_COLOR = (245, 245, 245)   # arrow for the step the drone takes
-OTHER_COLOR = (15, 15, 20)      # arrow for the step it would have taken without the rule
-OTHER_EDGE = (150, 150, 160)
+ARROW_SUPERSAMPLE = 3      # arrows are drawn this many times larger, then shrunk, to smooth their edges
+ARROW_TINT = 0.0           # how far the arrows are lightened from the drone's colour towards white (0 = the drone's exact colour)
+ARROW_EDGE = (16, 18, 28)  # dark edge round every arrow; None for no edge
+ARROW_EDGE_W = 0.045       # edge thickness, in cells
+ARROW_SHAFT = 0.085        # half the shaft's thickness, in cells
+ARROW_HEAD = 0.25          # half the head's width, in cells
+ARROW_DOTS = "dots"        # the dotted arrow's shaft: "dots" or "dashes"
+ARROW_HOLLOW = False       # True draws the dotted arrow's head as an outline
 
 OFF = float("inf")
 LEFT, RIGHT, UP, DOWN = (-1, 0), (1, 0), (0, -1), (0, 1)
@@ -115,33 +122,94 @@ def run(name, extra=None):
 
 
 def decision(name, positions):
-    """(cell, cell stepped to, cell it would have stepped to or None) for the case's arrows; None if it has none."""
+    """(cell, cell stepped to, cell it would have stepped to or None, drone) for the case's arrows; None if it has none."""
     spec = CASES[name]
     if spec["mark"]:
         drone, tick, direction = spec["mark"]
         cell = positions[tick][drone]
-        return cell, positions[tick + 1][drone], direction and (cell[0] + direction[0], cell[1] + direction[1])
+        return cell, positions[tick + 1][drone], direction and (cell[0] + direction[0], cell[1] + direction[1]), drone
     if spec["without"]:
         _, other = run(name, spec["without"])
         for tick in range(1, min(len(positions), len(other))):
             for drone, (taken, alternative) in enumerate(zip(positions[tick], other[tick])):
                 if taken != alternative:
-                    return positions[tick - 1][drone], taken, alternative
+                    return positions[tick - 1][drone], taken, alternative, drone
     return None
 
 
-def draw_arrow(image, start, end, color, outline):
-    """A short arrow from one cell towards the next, in full-size pixels."""
-    cell = TILE * main.SCALE_DOWN_FACTOR
-    centre = pygame.Vector2((start[0] + 0.5) * cell - main.TILE_GAP, (start[1] + 0.5) * cell - main.TILE_GAP)
-    along = pygame.Vector2(end[0] - start[0], end[1] - start[1])
+def _shapes(surface, color, shapes, grow=0):
+    """Draws a list of ("poly", points) / ("dot", centre, radius) / ("line", a, b, half-width) shapes, optionally fattened."""
+    for shape in shapes:
+        if shape[0] == "poly":
+            pygame.draw.polygon(surface, color, shape[1])
+            if grow:
+                pygame.draw.polygon(surface, color, shape[1], round(grow * 2))
+                for point in shape[1]:
+                    pygame.draw.circle(surface, color, point, grow)
+        elif shape[0] == "ring":  # outline-only polygon
+            pygame.draw.polygon(surface, color, shape[1], round(shape[2] + grow * 2))
+            for point in shape[1]:
+                pygame.draw.circle(surface, color, point, shape[2] / 2 + grow)
+        elif shape[0] == "dot":
+            pygame.draw.circle(surface, color, shape[1], shape[2] + grow)
+        elif shape[0] == "line":
+            pygame.draw.line(surface, color, shape[1], shape[2], round((shape[3] + grow) * 2))
+            pygame.draw.circle(surface, color, shape[1], shape[3] + grow)
+            pygame.draw.circle(surface, color, shape[2], shape[3] + grow)
+
+
+def arrow_shapes(centre, along, cell, dotted):
+    """A short arrow from the middle of a cell towards the next one: solid, or with a dotted shaft."""
     across = pygame.Vector2(-along.y, along.x)
-    tail, neck, tip = centre + along * cell * 0.12, centre + along * cell * 0.62, centre + along * cell * 0.95
-    shaft, head = cell * 0.11, cell * 0.27
-    points = [tail + across * shaft, neck + across * shaft, neck + across * head, tip,
-              neck - across * head, neck - across * shaft, tail - across * shaft]
-    pygame.draw.polygon(image, color, points)
-    pygame.draw.polygon(image, outline, points, 1)
+    tail, neck, tip = centre + along * cell * 0.12, centre + along * cell * 0.60, centre + along * cell * 0.95
+    shaft, head = cell * ARROW_SHAFT, cell * ARROW_HEAD
+    headPoints = [neck + across * head, tip, neck - across * head]
+    if not dotted:
+        return [("poly", [tail + across * shaft, neck + across * shaft] + headPoints + [neck - across * shaft, tail - across * shaft])]
+    shapes = [("ring", headPoints, shaft * 0.9)] if ARROW_HOLLOW else [("poly", headPoints)]
+    if ARROW_DOTS == "dots":
+        shapes += [("dot", tail + (neck - tail) * t, shaft * 1.05) for t in (0.04, 0.42, 0.80)]
+    else:
+        shapes += [("line", tail + (neck - tail) * a, tail + (neck - tail) * b, shaft * 0.85) for a, b in ((0.0, 0.26), (0.56, 0.82))]
+    return shapes
+
+
+def loop_shapes(centre, cell):
+    """An arrow that curls round inside the cell: the drone waits here."""
+    radius, shaft = cell * 0.24, cell * ARROW_SHAFT * 0.85
+    angles = [math.radians(a) for a in range(-50, 231, 14)]  # most of a circle, open at the top right
+    points = [centre + pygame.Vector2(math.cos(a), -math.sin(a)) * radius for a in angles]
+    shapes = [("line", a, b, shaft) for a, b in zip(points, points[1:])]
+    end = points[0]
+    tangent = pygame.Vector2(math.sin(angles[0]), math.cos(angles[0])) * -1  # the way the loop is travelling when it reaches its end, drawn clockwise
+    across = pygame.Vector2(-tangent.y, tangent.x)
+    head = cell * ARROW_HEAD * 0.8
+    shapes.append(("poly", [end + across * head, end + tangent * head * 1.5, end - across * head]))
+    return shapes
+
+
+def draw_arrows(image, sim, arrows):
+    """Draws the decision arrows on the finished picture, smoothed by drawing them large and shrinking."""
+    cell, taken, alternative, droneIndex = arrows
+    k = ARROW_SUPERSAMPLE
+    size = TILE * main.SCALE_DOWN_FACTOR * k
+    # Work on the 3 x 3 block of cells around the decision cell only
+    area = pygame.Rect((cell[0] - 1) * size // k, (cell[1] - 1) * size // k, 3 * size // k, 3 * size // k).clip(image.get_rect())
+    big = pygame.transform.scale(image.subsurface(area), (area.width * k, area.height * k))
+    centre = pygame.Vector2((cell[0] + 0.5) * size - main.TILE_GAP * k - area.x * k, (cell[1] + 0.5) * size - main.TILE_GAP * k - area.y * k)
+    color = main.blend(sim.drones[droneIndex].color, (255, 255, 255), ARROW_TINT)
+    shapes = []
+    if alternative and alternative != cell:
+        shapes.append(arrow_shapes(centre, pygame.Vector2(alternative[0] - cell[0], alternative[1] - cell[1]), size, dotted=True))
+    if taken != cell:
+        shapes.append(arrow_shapes(centre, pygame.Vector2(taken[0] - cell[0], taken[1] - cell[1]), size, dotted=False))
+    else:
+        shapes.append(loop_shapes(centre, size))
+    for group in shapes:  # each arrow gets its edge, then its colour, so the solid arrow sits on top of the dotted one
+        if ARROW_EDGE:
+            _shapes(big, ARROW_EDGE, group, grow=size * ARROW_EDGE_W)
+        _shapes(big, color, group)
+    image.blit(pygame.transform.smoothscale(big, area.size), area)
 
 
 def render(sim, arrows=None):
@@ -167,15 +235,7 @@ def render(sim, arrows=None):
     main.draw_drones(image, layer, layer.copy(), sim, TILE, (0, 0))
 
     if arrows:
-        cell, taken, alternative = arrows
-        if alternative and alternative != cell:
-            draw_arrow(image, cell, alternative, OTHER_COLOR, OTHER_EDGE)
-        if taken != cell:
-            draw_arrow(image, cell, taken, TAKEN_COLOR, OTHER_COLOR)
-        else:  # it waits
-            centre = ((cell[0] + 0.5) * TILE * scale - main.TILE_GAP, (cell[1] + 0.5) * TILE * scale - main.TILE_GAP)
-            pygame.draw.circle(image, TAKEN_COLOR, centre, TILE * scale * 0.2)
-            pygame.draw.circle(image, OTHER_COLOR, centre, TILE * scale * 0.2, 2)
+        draw_arrows(image, sim, arrows)
     return image
 
 
