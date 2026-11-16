@@ -1,40 +1,54 @@
-"""A near-best plan for the four drones when every obstacle is known in advance, to compare the planner against.
+"""Near-best plans for the four drones when every obstacle is known in advance, to compare the planner against.
 
-    .venv/bin/python3 groundTruth.py --open                   # the default map, seed 0, and open the picture
-    .venv/bin/python3 groundTruth.py --seed 1 --obstacles 0.3 --clustering 20 --rounds 12
-    .venv/bin/python3 groundTruth.py --demo                   # the three-map picture used in the README
+    .venv/bin/python3 groundTruth.py --open                   # columns method on the default map, seed 0
+    .venv/bin/python3 groundTruth.py --method free --seed 1 --obstacles 0.3 --clustering 20 --rounds 12
+    .venv/bin/python3 groundTruth.py --demo                   # the two three-map pictures used in the README
 
 It prints how many ticks the plan takes next to the planner's own result on
 the same map, and saves a picture of the routes (ground_truth.png by default).
 
-How it works:
-  1. LKH finds one short round trip over every free cell. LKH is a solver for
-     the travelling-salesman problem (the shortest route through a set of
-     points); it comes with the `elkai` package. Distances are real step
-     counts around the obstacles.
-  2. The round trip is cut into four consecutive pieces, one per drone, so
-     that the longest piece (with the flight out to it) is as short as
-     possible. The pieces follow the shape of the trip, which already bends
-     round walls and pockets.
-  3. LKH re-solves each piece on its own from that drone's start cell.
-  4. Cells on the edge of the longest route are moved one at a time into a
-     neighbouring drone's route wherever that shortens the longest route.
-     Steps 3 and 4 repeat a few times.
+Both methods use LKH, a heuristic solver for the travelling-salesman problem
+(the shortest route through a set of points) that comes with the `elkai`
+package. Distances are real step counts around the obstacles.
 
-  5. The routes are flown together, longest first. Where a drone would
-     enter a cell another is in or is entering, or swap places with one, it
-     waits a tick or steps round instead. Each such fix costs it a tick or
-     two. A drone that has finished counts as out of the way, as in the
-     planner, where a parked drone steps aside.
+  columns  Every drone keeps a strip that runs the length of the field, as
+           the planner's columns do. This is the plan a drone could follow
+           without knowing the map: nobody is sent to "the top quarter",
+           which needs a known way in.
+           1. The cells are cut into four vertical strips of equal size.
+           2. Small pockets of a strip that open only sideways go to the
+              neighbouring strip.
+           3. LKH solves each strip from its drone's start cell.
+           4. Neighbours shift their boundary, a few rows at a time, until
+              the four routes are about the same length.
 
-It is not a proven optimum. Finding one is not feasible at this size.
+  free     No shape is imposed, so a drone may get any blob of the field.
+           The lower of the two on maps with large obstacle clusters.
+           1. LKH finds one short round trip over every free cell.
+           2. The trip is cut into four consecutive pieces so that the
+              longest piece, with the flight out to it, is as short as
+              possible.
+           3. LKH re-solves each piece from its drone's start cell.
+           4. Cells on the edge of the longest route move one at a time into
+              a neighbour's route wherever that shortens the longest route.
+              Steps 3 and 4 repeat a few times.
+
+Either way the routes are then flown together, longest first. Where a drone
+would enter a cell another is in or is entering, or swap places with one, it
+waits a tick or steps round instead. A drone that has finished counts as out
+of the way, as in the planner, where a parked drone steps aside.
+
+Neither is a proven optimum. Finding one is not feasible at this size.
 
 The printed lower bound is exact: a drone flies over at most one new cell per
 tick, so no plan can finish in fewer than (cells to cover) / (drones) ticks.
 
-Google OR-Tools' routing solver was also tried on the same problem. Given
-120 seconds a map against LKH's 20 to 40, its plans were 20 to 45% longer, so
-it was dropped.
+Tried and dropped:
+  - Google OR-Tools' routing solver. Given 120 seconds a map against LKH's 20
+    to 40, its plans were 20 to 45% longer.
+  - Making sideways steps cost more in the free method's round trip, to pull
+    its pieces into strips. It cost nothing in ticks but only gave full-length
+    strips on sparse maps.
 
 LKH is free for academic and non-commercial use only.
 """
@@ -52,6 +66,8 @@ from Sim import CLUSTER_WEIGHT, OBSTACLE_RATE, OBSTACLE_ROUNDS, Simulation
 
 FAR = 1_000_000      # distance used to pin the end marker to the start cell; larger than any real route
 SPLIT_ROTATIONS = 300  # how many places to try starting the first piece when cutting the round trip
+BALANCE_TRIES = 40     # column method: most boundary shifts tried while evening out the routes
+POCKET_MAX = 30        # column method: a cut-off part of a strip larger than this many cells stays with its strip
 SWAP_ROUNDS = 3        # times the routes are re-solved and edge cells moved again
 
 
@@ -176,8 +192,8 @@ class GroundTruth:
 
     # ---------------- Solving
 
-    def solve(self):
-        """Returns one order per drone: the cells to fly over, starting with its start cell."""
+    def solve_free(self):
+        """Returns one order per drone (the cells to fly over, starting with its start cell), with no shape imposed."""
         trip = self.round_trip(self.cells)
         self.log(f"  one round trip over all {len(trip)} cells: {self.length(trip + trip[:1])} steps")
         orders = [[start] + piece for start, piece in zip(self.starts, self.cut_in_pieces(trip))]
@@ -191,6 +207,92 @@ class GroundTruth:
             if not moved:
                 break
         return orders
+
+    # ---------------- Solving in columns
+
+    def solve_columns(self):
+        """Like solve(), but every drone keeps a strip that runs the length of the field, as the planner's columns do.
+
+        1. The cells are cut into four vertical strips with the same number of cells.
+        2. Any small part of a strip that is cut off from the rest of it (a
+           pocket that opens only sideways, up to POCKET_MAX cells) goes to
+           the neighbouring strip it touches.
+        3. LKH solves each strip from its drone's start cell.
+        4. Then the routes are evened out: the pair of neighbours whose routes
+           differ most shift their boundary, the longer one giving up its
+           edge cells in as many rows as should close half the gap, furthest
+           up the field first. Both are re-solved and the shift is kept if
+           the longer of the two got shorter; otherwise half as many rows are
+           tried. This repeats up to BALANCE_TRIES times.
+        """
+        drones = len(self.starts)
+        byColumn = sorted(self.cells)
+        cuts = [round(i * len(byColumn) / drones) for i in range(drones + 1)]
+        strips = [set(byColumn[cuts[i]:cuts[i + 1]]) for i in range(drones)]
+        self.hand_over_pockets(strips)
+        orders = [self.best_order(start, sorted(strip)) for start, strip in zip(self.starts, strips)]
+        lengths = [self.length(order) for order in orders]
+        self.log(f"  four columns: cells {[len(s) for s in strips]}, route lengths {lengths}")
+        blocked = set()  # (longer, shorter) pairs that could not be improved since anything last changed
+        for attempt in range(BALANCE_TRIES):
+            pairs = sorted(((abs(lengths[i] - lengths[i + 1]), i) for i in range(drones - 1)), reverse=True)
+            choice = next(((gap, i) for gap, i in pairs if gap > 1 and (i, lengths[i] > lengths[i + 1]) not in blocked), None)
+            if choice is None:
+                break
+            gap, i = choice
+            long, short = (i, i + 1) if lengths[i] > lengths[i + 1] else (i + 1, i)
+            edge = sorted((cell for cell in strips[long] if any((cell[0] + dx, cell[1] + dy) in strips[short] for dx, dy in NEIGHBOURS)),
+                          key=lambda cell: (cell[1], cell[0]))
+            rows = max(1, round(gap / 2 / (lengths[long] / len(strips[long]))))
+            kept = False
+            while rows >= 1 and edge:
+                moving = set(edge[:rows])
+                trial = [strips[long] - moving, strips[short] | moving]
+                solved = [self.best_order(self.starts[d], sorted(cells)) for d, cells in zip((long, short), trial)]
+                if max(self.length(o) for o in solved) < lengths[long]:
+                    for d, cells, order in zip((long, short), trial, solved):
+                        strips[d], orders[d], lengths[d] = cells, order, self.length(order)
+                    kept = True
+                    break
+                rows //= 2
+            if kept:
+                blocked.clear()
+                self.log(f"  boundary {i} shifted by {len(moving)} cells: route lengths {lengths}")
+            else:
+                blocked.add((i, long == i))
+        return orders
+
+    def hand_over_pockets(self, strips):
+        """Gives each part of a strip that is cut off from its main part to a neighbouring strip it touches. Edits `strips` in place."""
+        for _ in range(len(strips) * 2):  # a pocket handed on can join another pocket, so go round a few times
+            changed = False
+            for i, strip in enumerate(strips):
+                parts, left = [], set(strip)
+                while left:
+                    stack = [left.pop()]
+                    part = set(stack)
+                    while stack:
+                        cell = stack.pop()
+                        for dx, dy in NEIGHBOURS:
+                            nxt = (cell[0] + dx, cell[1] + dy)
+                            if nxt in left:
+                                left.discard(nxt)
+                                part.add(nxt)
+                                stack.append(nxt)
+                    parts.append(part)
+                parts.sort(key=len, reverse=True)
+                for part in parts[1:]:
+                    if len(part) > POCKET_MAX:
+                        continue  # too big to be a pocket: the strip is just split by a wall, and its drone flies round
+                    touching = [j for j in (i - 1, i + 1) if 0 <= j < len(strips)
+                                and any((x + dx, y + dy) in strips[j] for x, y in part for dx, dy in NEIGHBOURS)]
+                    if touching:
+                        j = max(touching, key=lambda j: sum((x + dx, y + dy) in strips[j] for x, y in part for dx, dy in NEIGHBOURS))
+                        strip -= part
+                        strips[j] |= part
+                        changed = True
+            if not changed:
+                break
 
     def lkh(self, matrix):
         self.lkhCalls += 1
@@ -359,18 +461,18 @@ DEMO_MAPS = {
     "dense, clustered": dict(obstacleRate=0.2, clusterWeight=10, obstacleRounds=8, seed=0),
     "every slider at its maximum": dict(obstacleRate=0.3, clusterWeight=20, obstacleRounds=12, seed=1),
 }
-DEMO_PATH = os.path.join("docs", "near_optimal.png")
+DEMO_PATHS = {"columns": os.path.join("docs", "near_optimal_columns.png"), "free": os.path.join("docs", "near_optimal_free.png")}
 
 
-def solve_map(settings):
-    """Solves one map and prints the result. Returns (ticks, planner's ticks, lower bound, picture)."""
+def solve_map(settings, method):
+    """Solves one map with "columns" or "free" and prints the result. Returns (ticks, planner's ticks, lower bound, picture)."""
     truth = GroundTruth(Simulation(**settings))
     planner = Simulation(**settings)
     while planner.step():
         pass
     print(f"{truth.sim.world.width} x {truth.sim.world.height} field, {len(truth.cells) + len(truth.starts)} reachable free cells")
     began = time.perf_counter()
-    orders = truth.solve()
+    orders = truth.solve_columns() if method == "columns" else truth.solve_free()
     alone = [truth.length(order) for order in orders]
     paths, unsafe = truth.fly_together(orders)
     routes = [path[1:] for path in paths]
@@ -385,28 +487,28 @@ def solve_map(settings):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Near-best plan with every obstacle known in advance")
+    parser.add_argument("--method", choices=["columns", "free"], default="columns", help="see the top of this file")
     parser.add_argument("--seed", type=int, default=0, help="obstacle layout (default 0, the visualizer's starting map)")
     parser.add_argument("--obstacles", type=float, default=OBSTACLE_RATE, help="share of cells that are obstacles, e.g. 0.2")
     parser.add_argument("--clustering", type=float, default=CLUSTER_WEIGHT, help="clustering multiplier, e.g. 10")
     parser.add_argument("--rounds", type=int, default=OBSTACLE_ROUNDS, help="obstacle placement rounds, e.g. 8")
     parser.add_argument("--width", type=int, help="cells across (default: the usual field)")
     parser.add_argument("--height", type=int, help="cells along (default: the usual field)")
-    parser.add_argument("--demo", action="store_true", help=f"solve the three README maps and save them side by side to {DEMO_PATH}")
+    parser.add_argument("--demo", action="store_true", help="solve the three README maps with both methods and save one picture per method in docs/")
     parser.add_argument("--out", default="ground_truth.png", help="where to save the picture")
     parser.add_argument("--open", action="store_true", help="open the picture when done (macOS)")
     args = parser.parse_args()
 
-    if args.demo:
-        maps, out = DEMO_MAPS, DEMO_PATH
-    else:
-        maps, out = {"plan": dict(obstacleRate=args.obstacles, clusterWeight=args.clustering, obstacleRounds=args.rounds, seed=args.seed,
-                                  width=args.width, height=args.height)}, args.out
-    pictures = []
-    for name, settings in maps.items():
-        print(f"--- {name}")
-        ticks, plannerTicks, bound, picture = solve_map(settings)
-        pictures.append((f"{name}: {ticks} ticks (planner {plannerTicks}, bound {bound})", picture))
-    side_by_side(pictures, out)
-    print(f"picture saved to {out}")
-    if args.open:
-        subprocess.run(["open", out])
+    single = {"plan": dict(obstacleRate=args.obstacles, clusterWeight=args.clustering, obstacleRounds=args.rounds, seed=args.seed,
+                           width=args.width, height=args.height)}
+    jobs = [(method, DEMO_MAPS, path) for method, path in DEMO_PATHS.items()] if args.demo else [(args.method, single, args.out)]
+    for method, maps, out in jobs:
+        pictures = []
+        for name, settings in maps.items():
+            print(f"--- {method}: {name}")
+            ticks, plannerTicks, bound, picture = solve_map(settings, method)
+            pictures.append((f"{name}: {ticks} ticks (planner {plannerTicks}, bound {bound})", picture))
+        side_by_side(pictures, out)
+        print(f"picture saved to {out}")
+        if args.open:
+            subprocess.run(["open", out])

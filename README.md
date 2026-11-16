@@ -232,9 +232,21 @@ Click a group to open it. In each picture a solid arrow is the step the drone ta
 
 ## Near-optimal paths
 
-![near-optimal plans for three maps](docs/near_optimal.png)
+These are close to the best the four drones could do if every obstacle were known before take-off, on a default map, a dense one, and one with every slider at its maximum. Both come from `groundTruth.py`, which uses LKH, a heuristic solution for traveling salesman. Each caption gives the plan's ticks, the planner's ticks on the same map while finding the obstacles as it goes, and a bound no plan can beat (one new cell per drone per tick).
 
-These are close to the best the four drones could do if every obstacle were known before take-off, on a default map, a dense one, and one with every slider at its maximum. `groundTruth.py` uses LKH, a heuristic solution for traveling salesman, to find one short round trip over every free cell, cuts that trip into four consecutive pieces so the longest is as short as possible, then has LKH re-solve each piece from its drone's start cell. The four routes are then flown together, and a drone that would collide with another waits a tick or steps round it. Each caption gives the plan's ticks, the planner's ticks on the same map while finding the obstacles as it goes, and a bound no plan can beat (one new cell per drone per tick).
+### In columns
+
+![near-optimal plans in columns for three maps](docs/near_optimal_columns.png)
+
+Every drone keeps a strip that runs the length of the field, which is what a drone that cannot see the map ahead could actually follow. The field is cut into four equal strips, small pockets that open only sideways go to the neighbouring strip, and LKH solves each strip from its drone's start cell. Neighbours then shift their boundary a few rows at a time until the four routes are about the same length.
+
+### With no shape imposed
+
+![near-optimal free-form plans for three maps](docs/near_optimal_free.png)
+
+Here a drone may be given any part of the field, such as the far quarter, which needs a known way in. LKH finds one short round trip over every free cell, the trip is cut into four consecutive pieces so the longest is as short as possible, and LKH re-solves each piece from its drone's start cell. It is no better than columns on the default and dense maps (434 against 428 ticks, 398 against 397) and 9% faster on the densest one (356 against 392), where large clusters make some areas far cheaper to reach from one side.
+
+In both, the four routes are flown together, and a drone that would collide with another waits a tick or steps round it.
 
 ## Parameters
 
