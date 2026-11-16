@@ -74,6 +74,7 @@ def case(width, height, drones, obstacles, settings=PLAIN, without=None, mark=No
 # In the order the README describes them.
 CASES = {
     # ---- One drone sweeping its column
+    "plain_sweep": case(4, 6, 1, []),
     "blocked_cell": case(2, 6, 1, [(0, 3)], mark=(0, 3, UP)),
     "blocked_start": case(12, 5, 4, [(0, 4), (1, 4), (2, 4)]),
     "unreachable_cell": case(8, 8, 2, [(4, 0), (5, 1), (6, 0)]),
