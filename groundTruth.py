@@ -1,62 +1,58 @@
-"""Near-best plans for the four drones when every obstacle is known in advance, to compare the planner against.
+"""A near-best plan for the four drones when every obstacle is known in advance, to compare the planner against.
 
-    .venv/bin/python3 groundTruth.py                          # LKH method on the default map, seed 0
-    .venv/bin/python3 groundTruth.py --method ortools         # OR-Tools method
-    .venv/bin/python3 groundTruth.py --method both --open     # both, side by side in one picture
+    .venv/bin/python3 groundTruth.py --open                   # the default map, seed 0, and open the picture
     .venv/bin/python3 groundTruth.py --seed 1 --obstacles 0.3 --clustering 20 --rounds 12
+    .venv/bin/python3 groundTruth.py --demo                   # the three-map picture used in the README
 
-It prints how many ticks each plan takes next to the planner's own result on
+It prints how many ticks the plan takes next to the planner's own result on
 the same map, and saves a picture of the routes (ground_truth.png by default).
 
-Two independent methods:
+How it works:
+  1. LKH finds one short round trip over every free cell. LKH is a solver for
+     the travelling-salesman problem (the shortest route through a set of
+     points); it comes with the `elkai` package. Distances are real step
+     counts around the obstacles.
+  2. The round trip is cut into four consecutive pieces, one per drone, so
+     that the longest piece (with the flight out to it) is as short as
+     possible. The pieces follow the shape of the trip, which already bends
+     round walls and pockets.
+  3. LKH re-solves each piece on its own from that drone's start cell.
+  4. Cells on the edge of the longest route are moved one at a time into a
+     neighbouring drone's route wherever that shortens the longest route.
+     Steps 3 and 4 repeat a few times.
 
-  lkh      1. LKH finds one short round trip over every free cell. LKH is a
-              solver for the travelling-salesman problem (the shortest route
-              through a set of points); it comes with the `elkai` package.
-           2. The round trip is cut into four consecutive pieces, one per
-              drone, so that the longest piece (with the flight out to it) is
-              as short as possible. The pieces follow the shape of the trip,
-              which already bends round walls and pockets.
-           3. LKH re-solves each piece on its own from that drone's start cell.
-           4. Cells on the edge of the longest route are moved one at a time
-              into a neighbouring drone's route wherever that shortens the
-              longest route. Steps 3 and 4 repeat a few times.
-
-  ortools  Google OR-Tools' routing solver is given all four drones at once
-           and asked to make the longest route as short as possible, with
-           no drone given more than 5% over an equal share of the cells. It
-           decides who gets which cell and in what order together, but at
-           this size it searches far less deeply than LKH and comes out
-           clearly worse; it is here as an independent cross-check.
-
-In both, distances are real step counts around the obstacles.
-
-What they are not:
-  - Not proven optimums. Finding one is not feasible at this size.
+What it is not:
+  - Not a proven optimum. Finding one is not feasible at this size.
   - Drones are planned without regard to each other's position in time, so
     two routes can cross the same cell on the same tick. The number of such
-    clashes is printed. Fixing them would cost a few ticks, so the results
-    are slightly optimistic.
+    clashes is printed. Fixing them would cost a few ticks, so the result is
+    slightly optimistic.
 
 The printed lower bound is exact: a drone flies over at most one new cell per
 tick, so no plan can finish in fewer than (cells to cover) / (drones) ticks.
+
+Google OR-Tools' routing solver was also tried on the same problem. Given
+120 seconds a map against LKH's 20 to 40, its plans were 20 to 45% longer, so
+it was dropped.
 
 LKH is free for academic and non-commercial use only.
 """
 import argparse
 import collections
 import math
+import os
 import subprocess
 import time
+
+import elkai
 
 from Pathing import NEIGHBOURS
 from Sim import CLUSTER_WEIGHT, OBSTACLE_RATE, OBSTACLE_ROUNDS, Simulation
 
 FAR = 1_000_000      # distance used to pin the end marker to the start cell; larger than any real route
 SPLIT_ROTATIONS = 300  # how many places to try starting the first piece when cutting the round trip
-SWAP_ROUNDS = 3        # times the lkh method re-solves the routes and moves edge cells again
-SPAN_WEIGHT = 100      # OR-Tools: how much one step on the longest route counts against one step anywhere else
-SHARE_LIMIT = 1.05     # OR-Tools: no drone may be given more than this many times an equal share of the cells
+SWAP_ROUNDS = 3        # times the routes are re-solved and edge cells moved again
+
 
 
 def steps_from(source, free):
@@ -74,7 +70,7 @@ def steps_from(source, free):
 
 
 class GroundTruth:
-    """Holds one map and solves it. Both methods return one order per drone: the cells to fly over, starting with its start cell."""
+    """Holds one map and solves it."""
 
     def __init__(self, sim, log=print):
         self.sim = sim
@@ -127,9 +123,10 @@ class GroundTruth:
                     count += sameCell or swap
         return count
 
-    # ---------------- Method 1: LKH, one round trip cut into four
+    # ---------------- Solving
 
-    def solve_lkh(self):
+    def solve(self):
+        """Returns one order per drone: the cells to fly over, starting with its start cell."""
         trip = self.round_trip(self.cells)
         self.log(f"  one round trip over all {len(trip)} cells: {self.length(trip + trip[:1])} steps")
         orders = [[start] + piece for start, piece in zip(self.starts, self.cut_in_pieces(trip))]
@@ -145,8 +142,6 @@ class GroundTruth:
         return orders
 
     def lkh(self, matrix):
-        import elkai  # imported here so the OR-Tools method works without it
-
         self.lkhCalls += 1
         return elkai.DistanceMatrix(matrix).solve_tsp(runs=1)[:-1]  # the last entry repeats the first
 
@@ -272,42 +267,6 @@ class GroundTruth:
             lengths[b] += added
             moved += 1
 
-    # ---------------- Method 2: OR-Tools, all four drones at once
-
-    def solve_ortools(self, seconds):
-        from ortools.constraint_solver import pywrapcp, routing_enums_pb2
-
-        drones = len(self.starts)
-        nodes = self.starts + self.cells
-        end = len(nodes)  # one shared end marker that costs nothing to reach, so routes do not have to come back
-        matrix = [row + [0] for row in self.matrix(nodes)] + [[0] * (end + 1)]
-        manager = pywrapcp.RoutingIndexManager(end + 1, drones, list(range(drones)), [end] * drones)
-        routing = pywrapcp.RoutingModel(manager)
-        transit = routing.RegisterTransitMatrix(matrix)
-        routing.SetArcCostEvaluatorOfAllVehicles(transit)
-        routing.AddDimension(transit, 0, FAR, True, "steps")
-        routing.GetDimensionOrDie("steps").SetGlobalSpanCostCoefficient(SPAN_WEIGHT)  # the longest route is what matters
-        # Without a cap on cells per drone its first plan gives one drone nearly everything and the search never recovers
-        one = routing.RegisterUnaryTransitCallback(lambda index: 1)
-        routing.AddDimension(one, 0, math.ceil(len(self.cells) / drones * SHARE_LIMIT) + 2, True, "cells")
-        search = pywrapcp.DefaultRoutingSearchParameters()
-        search.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-        search.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-        search.time_limit.FromSeconds(seconds)
-        solution = routing.SolveWithParameters(search)
-        if solution is None:
-            raise RuntimeError("OR-Tools found no plan in the time given")
-        orders = []
-        for drone in range(drones):
-            index, order = routing.Start(drone), []
-            while not routing.IsEnd(index):
-                order.append(nodes[manager.IndexToNode(index)])
-                index = solution.Value(routing.NextVar(index))
-            orders.append(order)
-        self.log(f"  route lengths {[self.length(o) for o in orders]}")
-        return orders
-
-
 def render(sim, routes, tile=12):
     """The drone view of a finished plan, drawn the way the visualizer draws it. Flies the routes on `sim`."""
     import edge_cases  # reuses its picture code; importing it sets pygame up without a window
@@ -343,46 +302,56 @@ def side_by_side(pictures, path):
     pygame.image.save(sheet, path)
 
 
+# name -> obstacle settings for the picture in the README
+DEMO_MAPS = {
+    "default": dict(obstacleRate=0.08, clusterWeight=3, obstacleRounds=3, seed=0),
+    "dense, clustered": dict(obstacleRate=0.2, clusterWeight=10, obstacleRounds=8, seed=0),
+    "every slider at its maximum": dict(obstacleRate=0.3, clusterWeight=20, obstacleRounds=12, seed=1),
+}
+DEMO_PATH = os.path.join("docs", "near_optimal.png")
+
+
+def solve_map(settings):
+    """Solves one map and prints the result. Returns (ticks, planner's ticks, lower bound, picture)."""
+    truth = GroundTruth(Simulation(**settings))
+    planner = Simulation(**settings)
+    while planner.step():
+        pass
+    print(f"{truth.sim.world.width} x {truth.sim.world.height} field, {len(truth.cells) + len(truth.starts)} reachable free cells")
+    began = time.perf_counter()
+    routes = [truth.fly(order) for order in truth.solve()]
+    ticks = max(len(route) for route in routes)
+    print(f"known-map plan:  {ticks} ticks (routes {[len(r) for r in routes]}, {truth.clashes(routes)} clashes between drones not resolved)")
+    print(f"planner:         {planner.tick} ticks, finding the obstacles as it goes ({planner.tick / ticks - 1:+.1%})")
+    print(f"lower bound:     {truth.lower_bound()} ticks")
+    print(f"time:            {time.perf_counter() - began:.0f} s, {truth.lkhCalls} LKH runs")
+    return ticks, planner.tick, truth.lower_bound(), render(Simulation(**settings), routes)
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Near-best plans with every obstacle known in advance")
-    parser.add_argument("--method", choices=["lkh", "ortools", "both"], default="lkh")
+    parser = argparse.ArgumentParser(description="Near-best plan with every obstacle known in advance")
     parser.add_argument("--seed", type=int, default=0, help="obstacle layout (default 0, the visualizer's starting map)")
     parser.add_argument("--obstacles", type=float, default=OBSTACLE_RATE, help="share of cells that are obstacles, e.g. 0.2")
     parser.add_argument("--clustering", type=float, default=CLUSTER_WEIGHT, help="clustering multiplier, e.g. 10")
     parser.add_argument("--rounds", type=int, default=OBSTACLE_ROUNDS, help="obstacle placement rounds, e.g. 8")
     parser.add_argument("--width", type=int, help="cells across (default: the usual field)")
     parser.add_argument("--height", type=int, help="cells along (default: the usual field)")
-    parser.add_argument("--seconds", type=int, default=0, help="time limit for OR-Tools (default 60)")
+    parser.add_argument("--demo", action="store_true", help=f"solve the three README maps and save them side by side to {DEMO_PATH}")
     parser.add_argument("--out", default="ground_truth.png", help="where to save the picture")
     parser.add_argument("--open", action="store_true", help="open the picture when done (macOS)")
     args = parser.parse_args()
 
-    settings = dict(obstacleRate=args.obstacles, clusterWeight=args.clustering, obstacleRounds=args.rounds, seed=args.seed,
-                    width=args.width, height=args.height)
-    truth = GroundTruth(Simulation(**settings))
-    print(f"{truth.sim.world.width} x {truth.sim.world.height} field, {len(truth.cells) + len(truth.starts)} reachable free cells, "
-          f"lower bound {truth.lower_bound()} ticks")
-    planner = Simulation(**settings)
-    while planner.step():
-        pass
-    print(f"planner, finding the obstacles as it goes: {planner.tick} ticks")
-
-    pictures, lkhSeconds = [], None
-    for method in (["lkh", "ortools"] if args.method == "both" else [args.method]):
-        print(f"{method}:")
-        began = time.perf_counter()
-        if method == "lkh":
-            orders = truth.solve_lkh()
-            lkhSeconds = time.perf_counter() - began
-        else:
-            orders = truth.solve_ortools(args.seconds or 60)
-        seconds = time.perf_counter() - began
-        routes = [truth.fly(order) for order in orders]
-        ticks = max(len(route) for route in routes)
-        print(f"  {ticks} ticks in {seconds:.0f} s (routes {[len(r) for r in routes]}, {truth.clashes(routes)} clashes between drones "
-              f"not resolved); the planner takes {planner.tick / ticks - 1:+.1%}")
-        pictures.append((f"{method}: {ticks} ticks, solved in {seconds:.0f} s", render(Simulation(**settings), routes)))
-    side_by_side(pictures, args.out)
-    print(f"picture saved to {args.out}")
+    if args.demo:
+        maps, out = DEMO_MAPS, DEMO_PATH
+    else:
+        maps, out = {"plan": dict(obstacleRate=args.obstacles, clusterWeight=args.clustering, obstacleRounds=args.rounds, seed=args.seed,
+                                  width=args.width, height=args.height)}, args.out
+    pictures = []
+    for name, settings in maps.items():
+        print(f"--- {name}")
+        ticks, plannerTicks, bound, picture = solve_map(settings)
+        pictures.append((f"{name}: {ticks} ticks (planner {plannerTicks}, bound {bound})", picture))
+    side_by_side(pictures, out)
+    print(f"picture saved to {out}")
     if args.open:
-        subprocess.run(["open", args.out])
+        subprocess.run(["open", out])

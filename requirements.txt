@@ -1,4 +1,0 @@
-numpy==2.4.1
-pygame==2.6.1
-elkai==2.0.1
-ortools==9.15.6755
