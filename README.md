@@ -61,13 +61,7 @@ Every number the planner depends on, all in `Planner` in `Pathing.py`, and where
 
 ## Edge cases
 
-Each picture is the drone view of a small map built to make one situation happen, after the run has finished. A ring marks where a drone started and a dot where it ended. Purple cells are obstacles. Where a drone flew between the same two cells more than once, the lines are drawn side by side. Drones are red, yellow, green and blue, from left to right.
-
-Most pictures have two arrows on the cell where the rule decides something. The white arrow is the step the drone takes. The black arrow is the step it would have taken without the rule. A white dot in place of the white arrow means the drone waits there, and a white arrow on its own means that without the rule the drone would have stayed where it was.
-
-The cases are grouped: one drone on its own, a drone crossing a neighbour's column, drones getting in each other's way, and drones sharing work. Work sharing and the side-row swap are switched off in every picture except the ones about them, so each shows one thing.
-
-To add a case, put its map in `CASES` in `edge_cases.py`, run the script, and describe it here. `edge_cases.py <name>` redraws one picture and prints where every drone is on each tick, which is what the descriptions here were checked against. The maps are tuned to the planner as it stands, so after changing a planner rule or parameter, re-run the script and check each picture still shows what its entry says.
+<br>
 
 ### One drone sweeping its column
 
@@ -159,6 +153,8 @@ For this picture the stall limit was cut from 51 ticks to 3. The drone sets off 
 
 After 4 ticks without flying over a new cell it drops the cell it was heading for and picks the next one, which leaves one cell unflown. At the real limit, 270 ticks on the full field, this has never happened in testing. It is there so that one cell can never hold up a run.
 
+<br>
+
 ### Crossing a neighbour's column
 
 #### The walk to the starting column
@@ -208,6 +204,8 @@ The other taken cell is no longer on the way to anything, but yellow has dropped
 Red has flown into a one-cell pocket and heads for its next row, three rows up. Two routes are equally short. One runs over a cell only red has flown; the other over a cell on the edge of yellow's column that only yellow has flown.
 
 Red takes the one through yellow's cell, which gives that cell a second look, where re-flying its own cell would add nothing. This only settles ties between equally short routes and never makes a route longer.
+
+<br>
 
 ### Drones in each other's way
 
@@ -268,6 +266,8 @@ Green waits a tick, then drops the cell instead of queueing for it, since a dron
 Red finishes first and parks in its last cell, at the top of its column. Yellow's last cell is behind two obstacles, and the only way to it starts with the cell red is sitting in.
 
 A finished drone with nobody to help stays put. Once yellow has waited two ticks behind it, red steps aside to the nearest cell off yellow's route, one cell to the left, and yellow goes through and finishes.
+
+<br>
 
 ### Sharing the work
 
