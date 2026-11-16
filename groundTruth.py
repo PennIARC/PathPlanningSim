@@ -21,12 +21,13 @@ How it works:
      neighbouring drone's route wherever that shortens the longest route.
      Steps 3 and 4 repeat a few times.
 
-What it is not:
-  - Not a proven optimum. Finding one is not feasible at this size.
-  - Drones are planned without regard to each other's position in time, so
-    two routes can cross the same cell on the same tick. The number of such
-    clashes is printed. Fixing them would cost a few ticks, so the result is
-    slightly optimistic.
+  5. The routes are flown together, longest first. Where a drone would
+     enter a cell another is in or is entering, or swap places with one, it
+     waits a tick or steps round instead. Each such fix costs it a tick or
+     two. A drone that has finished counts as out of the way, as in the
+     planner, where a parked drone steps aside.
+
+It is not a proven optimum. Finding one is not feasible at this size.
 
 The printed lower bound is exact: a drone flies over at most one new cell per
 tick, so no plan can finish in fewer than (cells to cover) / (drones) ticks.
@@ -110,14 +111,64 @@ class GroundTruth:
                 route.append(cell)
         return route
 
-    def clashes(self, routes):
-        """Ticks on which two drones would be in the same cell or swap places, if every route were flown at once."""
-        ticks = max(len(route) for route in routes)
-        paths = [[start] + route + [(route or [start])[-1]] * (ticks - len(route)) for start, route in zip(self.starts, routes)]
+    def fly_together(self, orders):
+        """Cell-by-cell paths for every drone, one entry per tick including the start, with no two drones colliding.
+
+        Drones are taken longest route first. Each flies its order of cells,
+        but every hop is searched over cells and ticks together: it may wait,
+        and it may not be in a cell an earlier drone is in on that tick, nor
+        swap places with one. Earlier drones stop counting once they finish.
+        Returns (paths, hops that could not be made safe and were flown as planned).
+        """
+        taken = collections.defaultdict(set)  # tick -> cells held by drones already planned
+        moves = collections.defaultdict(set)  # tick -> (from, to) steps arriving on that tick
+        paths, unsafe = [None] * len(orders), 0
+        for drone in sorted(range(len(orders)), key=lambda i: -self.length(orders[i])):
+            path = [orders[drone][0]]
+            for goal in orders[drone][1:]:
+                if goal in path[-1:]:
+                    continue
+                hop = self.safe_hop(path[-1], goal, len(path) - 1, taken, moves)
+                if hop is None:  # boxed in: fly it as planned and own up to it
+                    hop = self.fly([path[-1], goal])
+                    unsafe += 1
+                path.extend(hop)
+            for tick in range(1, len(path)):
+                taken[tick].add(path[tick])
+                moves[tick].add((path[tick - 1], path[tick]))
+            taken[0].add(path[0])
+            paths[drone] = path
+        return paths, unsafe
+
+    def safe_hop(self, start, goal, tick, taken, moves, patience=40):
+        """Shortest list of cells (waits repeat a cell) from `start` at `tick` to `goal` that avoids the planned drones; None if there is none."""
+        limit = tick + self.steps(start)[goal] + patience
+        cameFrom = {(start, tick): None}
+        layer = [start]
+        while layer and tick < limit:
+            tick += 1
+            nextLayer = []
+            for cell in layer:
+                for nxt in [(cell[0] + dx, cell[1] + dy) for dx, dy in NEIGHBOURS] + [cell]:
+                    if nxt not in self.free or (nxt, tick) in cameFrom or nxt in taken[tick] or (nxt, cell) in moves[tick]:
+                        continue
+                    cameFrom[(nxt, tick)] = cell
+                    if nxt == goal:
+                        hop, at = [], (nxt, tick)
+                        while cameFrom[at] is not None:
+                            hop.append(at[0])
+                            at = (cameFrom[at], at[1] - 1)
+                        return hop[::-1]
+                    nextLayer.append(nxt)
+            layer = nextLayer
+        return None
+
+    def clashes(self, paths):
+        """Ticks on which two drones still flying are in the same cell or swap places. A check on fly_together."""
         count = 0
-        for tick in range(1, ticks + 1):
-            for i in range(len(paths)):
-                for j in range(i + 1, len(paths)):
+        for i in range(len(paths)):
+            for j in range(i + 1, len(paths)):
+                for tick in range(1, min(len(paths[i]), len(paths[j]))):
                     sameCell = paths[i][tick] == paths[j][tick]
                     swap = paths[i][tick] == paths[j][tick - 1] and paths[j][tick] == paths[i][tick - 1] and paths[i][tick] != paths[i][tick - 1]
                     count += sameCell or swap
@@ -276,7 +327,7 @@ def render(sim, routes, tile=12):
         for known, real in zip(row, worldRow):
             known.searched, known.isObstacle = True, real.isObstacle
     for drone, route in zip(sim.drones, routes):  # fly the routes so the trails are recorded
-        drone.route = list(route)
+        drone.route = [cell for previous, cell in zip([drone.position] + list(route), route) if cell != previous]  # waits leave no trail
         while drone.route:
             drone.advance()
     edge_cases.TILE, main.TRAIL_WIDTH = tile, 1.5
@@ -319,9 +370,13 @@ def solve_map(settings):
         pass
     print(f"{truth.sim.world.width} x {truth.sim.world.height} field, {len(truth.cells) + len(truth.starts)} reachable free cells")
     began = time.perf_counter()
-    routes = [truth.fly(order) for order in truth.solve()]
+    orders = truth.solve()
+    alone = [truth.length(order) for order in orders]
+    paths, unsafe = truth.fly_together(orders)
+    routes = [path[1:] for path in paths]
     ticks = max(len(route) for route in routes)
-    print(f"known-map plan:  {ticks} ticks (routes {[len(r) for r in routes]}, {truth.clashes(routes)} clashes between drones not resolved)")
+    print(f"known-map plan:  {ticks} ticks (routes {[len(r) for r in routes]}; {max(alone)} before keeping the drones apart, "
+          f"{sum(len(r) for r in routes) - sum(alone)} ticks added, {truth.clashes(paths) + unsafe} clashes left)")
     print(f"planner:         {planner.tick} ticks, finding the obstacles as it goes ({planner.tick / ticks - 1:+.1%})")
     print(f"lower bound:     {truth.lower_bound()} ticks")
     print(f"time:            {time.perf_counter() - began:.0f} s, {truth.lkhCalls} LKH runs")
