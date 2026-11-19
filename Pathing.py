@@ -606,43 +606,76 @@ class Planner:
                 return
 
     def _shift_boundary(self, left, right, loads):
-        """If one of two neighbouring drones has more left to do, the other takes cells from the nearest lane of its strip.
+        """If one of two neighbouring drones has more left to do, the other takes cells from a lane where the two touch.
 
-        Cells only move where the two drones' unflown cells meet: the heavier
-        drone's lane nearest the lighter one must be next to, or shared with,
-        a lane the lighter drone still has cells in. Half the difference in
-        work is moved, which leaves the two with the same amount. The cells
-        come from one end of that lane as one unbroken piece: next to the
-        lighter drone's own piece of the lane if it has one, otherwise from
-        the end further from the heavier drone. So a lane is only ever split
-        into one part for each drone, and neither has to turn more than once
-        to fly its part.
+        Half the difference in work is moved, which leaves the two with the
+        same amount. The cells come from one end of one of the heavier
+        drone's lanes as one unbroken piece, stopping short of the cell the
+        heavier drone is on or about to fly. Only the lighter drone's
+        unflown cells in its main body count here: the biggest connected
+        stretch of field it owns, flown or not, so islands it was handed
+        elsewhere never draw cells to them. If the lighter drone already
+        holds such cells in that lane, the piece must be the end next to
+        them, so it grows the lighter drone's piece; a lane where the lighter
+        drone's cells sit between the heavier drone's is left alone.
+        Otherwise the piece must have a cell beside one of the lighter
+        drone's unflown cells in the next lane over, and the end further
+        from the drones' start is tried first, unless the heavier drone is
+        flying that lane from there. So cells only move where the two
+        drones' unflown cells actually meet, a piece of a drone's cells that
+        does not touch the other's is never moved, and a lane is only ever
+        split into one part for each drone. Where the two touch in several
+        lanes, the lane closest to the line the field was first split on
+        between them is used, and of the two lanes either side of that line,
+        the one in the lighter drone's original strip.
         """
         heavy, light = (left, right) if loads[left] >= loads[right] else (right, left)
         gap = loads[heavy] - loads[light]
         if gap <= self.REBALANCE_GAP:
             return
-        towards = 1 if light is right else -1
+        count = int(gap // 2)  # each cell moved closes the gap by two
+        line = self.boundaries[left.index]  # x of the right-hand drone's first lane when the field was first split
         lanes = collections.defaultdict(list)
         for x, y in heavy.targets:
             lanes[x].append(y)
-        if not lanes:
-            return
-        edge = max(lanes) if towards == 1 else min(lanes)  # the heavier drone's lane nearest the lighter drone
-        lightLanes = {x for x, _ in light.targets}
-        if edge not in lightLanes and edge + towards not in lightLanes:
-            return  # their unflown cells do not meet
-        ys = sorted(lanes[edge])  # from the far end of the field towards the drones' start
-        lightYs = [y for x, y in light.targets if x == edge]
-        if lightYs:
-            if min(lightYs) > ys[-1]:
-                ys.reverse()  # the lighter drone holds the near part of this lane: grow that part
-        elif heavy.position[0] == edge and heavy.position[1] < (ys[0] + ys[-1]) / 2:
-            ys.reverse()  # the heavier drone is flying this lane from the far end: give away the near end
+        # The lighter drone's main body: the biggest stretch of field it owns, flown or not. Its islands do not count.
+        body = max(self._connected_groups(light.assignedCells), key=len, default=set())
+        lightCells = light.targets & body
+        lightLanes = collections.defaultdict(list)
+        for x, y in lightCells:
+            lightLanes[x].append(y)
         ahead = {heavy.position} | set(heavy.route[:1])
-        piece = [(edge, y) for y in ys[:int(gap // 2)] if (edge, y) not in ahead]  # each cell moved closes the gap by two
-        if piece:
-            self._transfer(piece, heavy, light)
+        best = None  # (how far the lane is from the line, lane is in the heavier drone's original strip), piece
+        for x, ys in lanes.items():
+            ys.sort()  # from the far end of the field towards the drones' start
+            lightYs = lightLanes.get(x)
+            if lightYs:
+                ends = []
+                if max(lightYs) < ys[0]:
+                    ends.append(ys)  # the lighter drone holds the far part of this lane: grow that part
+                if min(lightYs) > ys[-1]:
+                    ends.append(ys[::-1])  # it holds the near part
+            elif heavy.position[0] == x and heavy.position[1] < (ys[0] + ys[-1]) / 2:
+                ends = [ys[::-1], ys]  # the heavier drone is flying this lane from the far end: give away the near end
+            else:
+                ends = [ys, ys[::-1]]
+            for order in ends:
+                piece = []
+                for y in order[:count]:
+                    if (x, y) in ahead:
+                        break  # keep the piece unbroken
+                    piece.append((x, y))
+                if not piece:
+                    continue
+                if not lightYs and not any((x + dx, y) in lightCells for _, y in piece for dx in (-1, 1)):
+                    continue  # this piece does not touch the lighter drone's cells
+                inLight = x >= line if light is right else x < line
+                key = (x - line if x >= line else line - 1 - x, not inLight)
+                if best is None or key < best[0]:
+                    best = (key, piece)
+                break
+        if best:
+            self._transfer(best[1], heavy, light)
 
     def _take_cells(self, drone):
         """Applies the three cases to every other drone's cell on this drone's detour."""
