@@ -64,7 +64,7 @@ class Drone:
         self.targets = set()    # this drone's own cells still to fly over
         self.stops = []         # cells taken over from other drones; flown over first, in this order
         self.route = []         # cell-by-cell steps to the cell it is heading for
-        self.detouring = False  # the current route is longer than a single step along the sweep
+        self.detouring = False  # the current route passes a cell that is not one of its own unvisited cells
         self.inTransit = True   # still on the way from the start cell to the first target
         self.blockedTicks = 0   # ticks in a row spent waiting behind another drone
         self.yielding = True    # when blocked: this drone is the one that has to give way

@@ -132,8 +132,9 @@ class Planner:
     `route` is the cell-by-cell way there, found with A* around every obstacle
     any drone has seen. Obstacle cells are dropped as they are discovered.
 
-    A route longer than one step is a detour, and it may cross cells that
-    belong to another drone. For each such cell:
+    A route that passes through any cell other than the drone's own unvisited
+    ones is a detour, however long it is, and it may cross cells that belong
+    to another drone. For each such cell:
       - the owner gets there first: nothing changes, the cell is just flown through
       - both would get there on the same tick: the owner goes first and the
         detouring drone waits a turn (handled by resolve_moves)
@@ -392,7 +393,7 @@ class Planner:
     def _set_route(self, drone, route):
         """Returns True if the new route took cells from another drone."""
         drone.route = route
-        drone.detouring = len(route) > 1
+        drone.detouring = any(self._off_own(drone, cell) for cell in route[:-1])
         drone.blockedTicks = 0
         return self._take_cells(drone) if drone.detouring and not drone.inTransit else False
 
@@ -542,9 +543,15 @@ class Planner:
     # ---------------- Sharing work out between drones
 
     @staticmethod
+    def _off_own(drone, cell):
+        """True if the cell is not one of the drone's own cells still to fly over."""
+        return cell not in drone.targets and cell not in drone.stops
+
+    @staticmethod
     def _load(drone):
-        """Rough count of the work a drone has left: cells to fly over, plus any long trip it is on."""
-        return len(drone.targets) + len(drone.stops) + (len(drone.route) if drone.detouring else 0)
+        """Rough count of the ticks of work a drone has left: cells to fly over, plus the steps of its current
+        route over any other cells (its own cells on the route are already counted once)."""
+        return len(drone.targets) + len(drone.stops) + sum(Planner._off_own(drone, cell) for cell in drone.route)
 
     def _transfer(self, cells, source, receiver):
         """Moves cells from one drone's sweep to another's."""
@@ -695,7 +702,7 @@ class Planner:
 
         A drone has to wait if its next cell is being entered by a drone with
         right of way, is occupied by a drone that is staying put, or would mean
-        swapping places. Drones making a single step along their sweep have
+        swapping places. Drones flying over their own unvisited cells have
         right of way over detouring ones; ties go to the lower index.
         """
         wants = {d: d.route[0] for d in self.drones if d.route}
