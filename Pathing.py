@@ -150,8 +150,11 @@ class Planner:
                        # Tuned by measurement on the 30 x 60 field: see the Parameters table in the README.
     LANE_ORDER = "pairs"    # which way each drone works across its strip: "pairs" has neighbours 0+1 and 2+3 sweep
                             # towards each other so their unflown cells meet; "outward" has all four sweep away from the middle
-    HANDOVER_WEIGHT = 1.0   # cells a drone is leaving behind go to another drone if that drone's trip to them, times
-                            # this, is shorter than the owner's own trip (0 = never hand over)
+    HANDOVER_WEIGHT = 0     # cells a drone is leaving behind go to another drone if that drone's trip to them, times
+                            # this, is shorter than the owner's own trip (0 = never hand over). Off since the sweep
+                            # went to lanes: a wall across a strip makes a drone finish the lanes on one side of it
+                            # first, and the far side is not abandoned, it is next. Handing it over gave neighbours
+                            # whole lanes inside the strip. Measured: on is no faster on default maps, 2% slower on dense.
     HANDOVER_ALONG = 0      # in that trip a step left or right costs 1 and a step up or down costs this, so cells go to
                             # drones close by sideways, not ones far off sideways that happen to be level (1 = plain steps).
                             # 0 measured fastest on the default map (0.1 and 0.25 were slower and left more stray cells)
