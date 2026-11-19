@@ -151,6 +151,9 @@ class Planner:
                             # towards each other so their unflown cells meet; "outward" has all four sweep away from the middle
     HANDOVER_WEIGHT = 1.0   # cells a drone is leaving behind go to another drone if that drone's trip to them, times
                             # this, is shorter than the owner's own trip (0 = never hand over)
+    HANDOVER_ALONG = 0      # in that trip a step left or right costs 1 and a step up or down costs this, so cells go to
+                            # drones close by sideways, not ones far off sideways that happen to be level (1 = plain steps).
+                            # 0 measured fastest on the default map (0.1 and 0.25 were slower and left more stray cells)
     REBALANCE_EVERY = 1     # ticks between checks that share work out between drones (0 = never)
     REBALANCE_GAP = 1       # two neighbours' remaining work must differ by more than this many cells before cells move
     HELP_MIN = 6            # a finished drone only helps a drone that has at least this many cells left
@@ -344,6 +347,28 @@ class Planner:
                     queue.append(nxt)
         return steps
 
+    def _sideways_trip(self, position):
+        """Cost from `position` to every reachable cell, around known obstacles, with unseen cells counted as free.
+
+        A step left or right costs 1 and a step up or down costs HANDOVER_ALONG,
+        so the cost is mostly how far away a cell is sideways.
+        """
+        cost = {position: 0}
+        heap = [(0, position)]
+        while heap:
+            c, cell = heapq.heappop(heap)
+            if c > cost[cell]:
+                continue
+            for dx, dy in NEIGHBOURS:
+                nxt = (cell[0] + dx, cell[1] + dy)
+                if not self.grid.in_bounds(*nxt) or nxt in self.obstacles:
+                    continue
+                nc = c + (1 if dx else self.HANDOVER_ALONG)
+                if nc < cost.get(nxt, float("inf")):
+                    cost[nxt] = nc
+                    heapq.heappush(heap, (nc, nxt))
+        return cost
+
     @staticmethod
     def _straight_steps(a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -379,8 +404,10 @@ class Planner:
         """A drone about to start a later lane gives the cells it is leaving behind to any drone that is closer to them.
 
         The cells in earlier lanes are split into connected groups. For each group the
-        trip is the fewest steps from a drone to the group's nearest cell,
-        around known obstacles, with unseen cells counted as free. So while a
+        trip is the cheapest way from a drone to the group's nearest cell,
+        around known obstacles, with unseen cells counted as free, where a step
+        up or down costs only HANDOVER_ALONG of a sideways step (_sideways_trip),
+        so a drone far off sideways does not win just by being level. So while a
         way in may still exist the owner's trip stays short and it keeps the
         cells; once the walls are known and another drone is better placed,
         they change hands. Returns True if any did.
@@ -395,8 +422,8 @@ class Planner:
         if best is None or self._lane(drone.index, best[2]) <= here:
             return False  # not moving on to a later lane yet
         never = float("inf")
-        ownSteps = self._steps_through_seen(drone.position, never, seenOnly=False)
-        others = [(d, self._steps_through_seen(d.position, never, seenOnly=False))
+        ownSteps = self._sideways_trip(drone.position)
+        others = [(d, self._sideways_trip(d.position))
                   for d in self.drones if d is not drone and not d.inTransit and not d.makingWay]
         handedOver = False
         for group in self._connected_groups(below & drone.targets):
