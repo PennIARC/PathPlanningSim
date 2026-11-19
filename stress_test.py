@@ -12,7 +12,7 @@ but were never flown over.
 It also reports two signs of wasted effort, to help spot odd behaviour worth
 watching in the visualizer: "extra flying" is how much further the drones flew
 than one step per reachable cell, and "idle" is drone-ticks spent standing
-still with work left. The worst map of each kind is named so it can be
+still with work left. "Turns per drone" is how often a drone changed direction. The worst map of each kind is named so it can be
 replayed with, for example:
 
     .venv/bin/python3 main.py --seed 7 --obstacles 0.3 --clustering 20 --rounds 12
@@ -39,6 +39,12 @@ MAP_KINDS = {
     "dense, clustered": (0.20, 10, 8),
     "very dense, clustered": (0.30, 20, 12),
 }
+
+
+def count_turns(trail):
+    """Times a drone changed direction along its trail."""
+    steps = [(b[0] - a[0], b[1] - a[1]) for a, b in zip(trail, trail[1:]) if a != b]
+    return sum(a != b for a, b in zip(steps, steps[1:]))
 
 
 def run_one(rate, weight, rounds, seed, settings=None):
@@ -91,6 +97,7 @@ def run_one(rate, weight, rounds, seed, settings=None):
         "reachable": len(reachable),
         "extra": sum(len(d.trail) - 1 for d in sim.drones) / max(1, len(reachable)) - 1,
         "idle": idle,
+        "turns": sum(count_turns(d.trail) for d in sim.drones) / len(sim.drones),
         "msPerTick": 1000 * seconds / max(1, sim.tick),
         "problems": problems,
     }
@@ -114,7 +121,7 @@ def summary(results):
             f"max {max(r['ticks'] for r in results):4} | missed avg {statistics.mean(r['missed'] for r in results):5.2f} "
             f"max {max(r['missed'] for r in results):3} | extra flying avg {statistics.mean(r['extra'] for r in results):5.1%} "
             f"worst {worst['extra']:5.1%} (seed {worst['seed']}) | idle avg {statistics.mean(r['idle'] for r in results):5.1f} "
-            f"max {max(r['idle'] for r in results):3} | {statistics.mean(r['msPerTick'] for r in results):.2f} ms/tick")
+            f"max {max(r['idle'] for r in results):3} | turns per drone avg {statistics.mean(r['turns'] for r in results):5.1f} | {statistics.mean(r['msPerTick'] for r in results):.2f} ms/tick")
 
 
 if __name__ == "__main__":

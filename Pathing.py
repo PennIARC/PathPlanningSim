@@ -66,10 +66,11 @@ def astar(grid, start, goal, blocked, flyer=None):
     through, ending with goal and not including start; [] if start is goal;
     None if there is no way through.
 
-    `flyer` is the index of the drone the path is for. It only settles ties:
-    among equally short paths, the one that runs over the most cells another
-    drone has flown and this one has not is chosen, so a second pair of eyes
-    sees them. It never makes a path longer.
+    Ties between equally short paths are settled in two steps, and neither
+    ever makes a path longer. First the path with the fewest turns wins.
+    Then, if `flyer` (the index of the drone the path is for) is given, the
+    one that runs over the most cells another drone has flown and this one
+    has not, so a second pair of eyes sees them.
     """
     if start == goal:
         return []
@@ -86,43 +87,48 @@ def astar(grid, start, goal, blocked, flyer=None):
         visitedBy = grid.cells[cell[1]][cell[0]].visitedBy
         return 0 if visitedBy and flyer not in visitedBy else 1
 
-    never = (float("inf"), 0)
-    best = {start: (0, 0)}  # cell -> (steps, cells on the way that were not new eyes), compared in that order
+    never = (float("inf"), 0, 0)
+    # A state is a cell plus the direction it was entered from (an index into NEIGHBOURS, -1 at the start),
+    # since the number of turns so far depends on which way the path is heading.
+    best = {(start, -1): (0, 0, 0)}  # state -> (steps, turns, cells that were not new eyes), compared in that order
     cameFrom = {}
-    frontier = [(remaining(start), 0, 0, start)]
+    frontier = [(remaining(start), 0, 0, 0, start, -1)]
     while frontier:
-        _, sameEyes, cost, current = heapq.heappop(frontier)
+        _, turns, sameEyes, cost, current, heading = heapq.heappop(frontier)
         if current == goal:
-            path = []
-            while current != start:
-                path.append(current)
-                current = cameFrom[current]
+            path, state = [], (current, heading)
+            while state[0] != start:
+                path.append(state[0])
+                state = cameFrom[state]
             return path[::-1]
-        if (cost, sameEyes) > best[current]:
+        if (cost, turns, sameEyes) > best[(current, heading)]:
             continue
-        for dx, dy in NEIGHBOURS:
+        for direction, (dx, dy) in enumerate(NEIGHBOURS):
             nxt = (current[0] + dx, current[1] + dy)
             if not grid.in_bounds(*nxt) or nxt in blocked:
                 continue
-            reached = (cost + 1, sameEyes + same_eyes(nxt))
-            if reached < best.get(nxt, never):
-                best[nxt] = reached
-                cameFrom[nxt] = current
-                heapq.heappush(frontier, (cost + 1 + remaining(nxt), reached[1], cost + 1, nxt))
+            reached = (cost + 1, turns + (heading not in (-1, direction)), sameEyes + same_eyes(nxt))
+            if reached < best.get((nxt, direction), never):
+                best[(nxt, direction)] = reached
+                cameFrom[(nxt, direction)] = (current, heading)
+                heapq.heappush(frontier, (cost + 1 + remaining(nxt), reached[1], reached[2], cost + 1, nxt, direction))
     return None
 
 
 class Planner:
     """Decides where every drone goes each tick.
 
-    Each drone sweeps its strip row by row from the bottom (the bous sweep).
-    `targets` is the set of its own cells still to fly over and `stops` is an
-    ordered list of cells it took over from other drones, which come first.
-    Whenever it needs somewhere to go it scores the ends of every unbroken run
-    of unvisited cells: A* steps to get there, plus CLIMB_COST for each row the
-    end is above the drone. The cheapest end wins. So it sweeps a row from
-    whichever side is nearer, finishes what is at or below it before moving
-    up, and does not shuttle around a wall to keep rows in strict order.
+    Each drone sweeps its strip in lanes: up one column of cells, across one
+    cell, down the next (the bous sweep). Lanes run the length of the field,
+    so a drone turns twice per lane and not twice per row. `targets` is the
+    set of its own cells still to fly over and `stops` is an ordered list of
+    cells it took over from other drones, which come first. Whenever it needs
+    somewhere to go it scores the ends of every unbroken up-and-down run of
+    unvisited cells: A* steps to get there, plus LANE_COST for each lane the
+    end lies beyond the earliest lane the drone still has cells in. The
+    cheapest end wins. So it finishes a lane before starting the next, enters
+    a lane from whichever end is nearer, and goes back for cells it had to
+    leave when it next passes close to them.
     `route` is the cell-by-cell way there, found with A* around every obstacle
     any drone has seen. Obstacle cells are dropped as they are discovered.
 
@@ -139,16 +145,16 @@ class Planner:
     REROUTE_AFTER = 2  # ticks a drone that has to give way waits behind another drone before finding a way round it
     GIVE_UP_AFTER = 8  # ticks blocked with no way round before the cell it was heading for is skipped
     STALL_FACTOR = 3   # a cell not reached within this many times (width + height) ticks is skipped
-    CLIMB_COST = 3     # extra steps a drone will fly to finish cells at or below its row before moving up one row.
+    LANE_COST = 3      # extra steps a drone will fly to finish cells in earlier lanes before starting one lane further on.
                        # Tuned by measurement on the 30 x 60 field: see the Parameters table in the README.
-    BACKTRACK_WEIGHT = 1.0  # a drone about to move up goes back for skipped cells below it if the trip is at most
-                            # this many times the rows it still has to climb (0 = never go back early)
+    LANE_ORDER = "pairs"    # which way each drone works across its strip: "pairs" has neighbours 0+1 and 2+3 sweep
+                            # towards each other so their unflown cells meet; "outward" has all four sweep away from the middle
     HANDOVER_WEIGHT = 1.0   # cells a drone is leaving behind go to another drone if that drone's trip to them, times
                             # this, is shorter than the owner's own trip (0 = never hand over)
     REBALANCE_EVERY = 1     # ticks between checks that share work out between drones (0 = never)
     REBALANCE_GAP = 1       # two neighbours' remaining work must differ by more than this many cells before cells move
     HELP_MIN = 6            # a finished drone only helps a drone that has at least this many cells left
-    SIDE_ROW_MIN = 3        # a detour's sideways stretch over old ground moves one row over, at a cost of two steps,
+    SIDE_LANE_MIN = 3       # a detour's up-and-down stretch over old ground moves one lane over, at a cost of two steps,
                             # if that flies it over at least this many of the drone's unvisited cells (0 = never)
 
     def __init__(self, grid, drones, obstacles):
@@ -158,6 +164,15 @@ class Planner:
         # First x of every drone's strip but the leftmost, as the field is first split. Set here, not in assign(),
         # because stepping back in the visualizer builds a new Planner without assigning again.
         self.boundaries = [xs[0] for xs in split_into_columns(grid.width, len(drones))[1:]]
+        # +1 if the drone works across its strip from left to right, -1 if from right to left
+        if self.LANE_ORDER == "pairs":
+            self.sweep = [1 if i % 2 == 0 else -1 for i in range(len(drones))]
+        else:
+            self.sweep = [-1 if i < len(drones) / 2 else 1 for i in range(len(drones))]
+
+    def _lane(self, flyer, cell):
+        """How far along the drone's sweep a cell's lane is. Lower numbers are flown first."""
+        return self.sweep[flyer] * cell[0]
 
     def assign(self):
         """Gives each drone a vertical strip of the field; every cell in it becomes a target."""
@@ -220,78 +235,79 @@ class Planner:
                 return False
         return self._route_to_next_goal(drone)
 
-    def _next_leg(self, position, stops, targets, flyer=None):
+    def _next_leg(self, position, stops, targets, flyer):
         """Picks the next cell to head for and returns the A* route to it; [] if there is nowhere left to go.
 
         Stops come first, in order. After that the goal is the cheapest end of
-        any unbroken run of unvisited cells in a row, where the cost is the A*
-        steps to reach it plus CLIMB_COST per row it lies above the drone.
-        Ends that cannot be reached at all are removed from `stops` /
-        `targets` as they are found.
+        any unbroken up-and-down run of unvisited cells, where the cost is the
+        A* steps to reach it plus LANE_COST per lane it lies beyond the
+        earliest lane with cells left. Ends that cannot be reached at all are
+        removed from `stops` / `targets` as they are found.
         """
         while stops:
             route = astar(self.grid, position, stops[0], self.obstacles, flyer)
             if route:
-                return self._use_side_rows(position, route, stops, targets)
+                return self._use_side_lanes(position, route, stops, targets)
             stops.pop(0)
         best = self._best_end(position, targets, flyer)
         if best is None:
             return []
-        if best[2][1] < position[1]:  # about to move up a row: first see if skipped cells below are worth going back for
-            goBack = self._route_back_to_skipped(position, targets, flyer)
-            if goBack:
-                return self._use_side_rows(position, goBack, stops, targets)
-        return self._use_side_rows(position, best[1], stops, targets)
+        return self._use_side_lanes(position, best[1], stops, targets)
 
-    def _use_side_rows(self, position, route, stops, targets):
-        """Moves sideways stretches of a detour onto the row above or below when that covers new cells.
+    def _use_side_lanes(self, position, route, stops, targets):
+        """Moves up-and-down stretches of a detour onto the lane to the left or right when that covers new cells.
 
         A detour often has to cross cells already flown, e.g. along a finished
-        row to get round the end of a wall. If the same stretch one row over is
-        all unvisited cells of this drone, the route steps over to that row,
-        flies the stretch there and steps back: two extra steps, and that part
-        of the row never needs its own visit. Where the route was about to turn
-        that way anyway the swap costs nothing and is always made.
+        lane to get round the end of a wall. If the same stretch one lane over
+        is all unvisited cells of this drone, the route steps over to that
+        lane, flies the stretch there and steps back: two extra steps, and
+        that part of the lane never needs its own visit. Where the route was
+        about to turn that way anyway the swap costs nothing and is always made.
         """
-        if not self.SIDE_ROW_MIN or len(route) < 2:
+        if not self.SIDE_LANE_MIN or len(route) < 2:
             return route
         path = [position] + route
         end = len(path) - 1
         while end > 0:  # work backwards so earlier indexes stay valid as the path is edited
             start = end
-            while start > 0 and path[start - 1][1] == path[end][1]:
+            while start > 0 and path[start - 1][0] == path[end][0]:
                 start -= 1
-            best = None  # (cells gained minus extra steps, first index, last index, row offset, extra steps)
-            for dy in (-1, 1):
+            best = None  # (cells gained minus extra steps, first index, last index, lane offset, extra steps)
+            for dx in (-1, 1):
                 i = start
                 while i <= end:
-                    if (path[i][0], path[i][1] + dy) not in targets:
+                    if (path[i][0] + dx, path[i][1]) not in targets:
                         i += 1
                         continue
                     j = i
-                    while j < end and (path[j + 1][0], path[j + 1][1] + dy) in targets:
+                    while j < end and (path[j + 1][0] + dx, path[j + 1][1]) in targets:
                         j += 1
-                    turnsThere = j + 1 < len(path) and path[j + 1] == (path[j][0], path[j][1] + dy)
+                    turnsThere = j + 1 < len(path) and path[j + 1] == (path[j][0] + dx, path[j][1])
                     skipped = path[i + 1:j + 1] if turnsThere else path[i + 1:j]
                     extra = 0 if turnsThere else 2
                     gain = j - i + 1 - turnsThere  # the turn already flew over the last of them
                     wanted = any(cell in targets or cell in stops for cell in skipped)
-                    if j > i and not wanted and gain >= (1 if turnsThere else self.SIDE_ROW_MIN):
+                    if j > i and not wanted and gain >= (1 if turnsThere else self.SIDE_LANE_MIN):
                         if best is None or gain - extra > best[0]:
-                            best = (gain - extra, i, j, dy, extra)
+                            best = (gain - extra, i, j, dx, extra)
                     i = j + 1
             if best is not None:
-                _, i, j, dy, extra = best
-                side = [(x, y + dy) for x, y in path[i:j + 1]]
+                _, i, j, dx, extra = best
+                side = [(x + dx, y) for x, y in path[i:j + 1]]
                 path[i + 1:j + (0 if extra else 1)] = side if extra else side[:-1]
             end = start - 1
         return path[1:]
 
-    def _best_end(self, position, targets, flyer=None):
+    def _best_end(self, position, targets, flyer):
         """(cost, route, cell) for the cheapest end of any run of unvisited cells; None if none can be reached."""
         while targets:
+            first = min(self._lane(flyer, cell) for cell in targets)  # the earliest lane that still has cells in it
+
+            def beyond(end):
+                return self.LANE_COST * (self._lane(flyer, end) - first)
+
             # Try ends in order of the least they could possibly cost, and stop once no later one can win
-            ordered = sorted((self._straight_steps(position, end) + self._climb(position, end), end) for end in self._run_ends(targets))
+            ordered = sorted((self._straight_steps(position, end) + beyond(end), end) for end in self._run_ends(targets))
             best = None
             for leastCost, end in ordered:
                 if best is not None and leastCost >= best[0]:
@@ -300,36 +316,11 @@ class Planner:
                 if not route:
                     targets.discard(end)  # walled in by known obstacles: skip it
                     continue
-                cost = len(route) + self._climb(position, end)
+                cost = len(route) + beyond(end)
                 if best is None or cost < best[0]:
                     best = (cost, route, end)
             if best is not None:
                 return best
-        return None
-
-    def _route_back_to_skipped(self, position, targets, flyer=None):
-        """Route to the nearest skipped cell below the drone, if going back for it now beats leaving it to the end.
-
-        Going back now costs about the trip there and back. Leaving it costs
-        about the trip plus the rows still to climb, since the drone then has
-        to come all the way down again. So it is worth going back when the trip
-        is no longer than BACKTRACK_WEIGHT times the rows left to climb.
-
-        Only cells whose shortest route runs entirely through cells the drones
-        have already seen count. While an unseen cell could still be a way in,
-        the drone keeps sweeping and finds out.
-        """
-        if not self.BACKTRACK_WEIGHT:
-            return None
-        below = [end for end in self._run_ends(targets) if end[1] > position[1]]
-        budget = self.BACKTRACK_WEIGHT * (position[1] - min(y for _, y in targets))
-        if not below or budget < 1:
-            return None
-        steps = self._steps_through_seen(position, budget)
-        for known, end in sorted((steps[end], end) for end in below if end in steps)[:3]:
-            route = astar(self.grid, position, end, self.obstacles, flyer)
-            if route and len(route) == known:  # no shorter way through unseen cells, so this route is certain
-                return route
         return None
 
     def _steps_through_seen(self, position, limit, seenOnly=True):
@@ -357,22 +348,19 @@ class Planner:
     def _straight_steps(a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
-    def _climb(self, position, cell):
-        return self.CLIMB_COST * max(0, position[1] - cell[1])  # rows go up the field as y gets smaller
-
     @staticmethod
     def _run_ends(targets):
-        """Both ends of every unbroken left-to-right run of cells in `targets`."""
-        rows = collections.defaultdict(list)
+        """Both ends of every unbroken up-and-down run of cells in `targets`."""
+        lanes = collections.defaultdict(list)
         for x, y in targets:
-            rows[y].append(x)
+            lanes[x].append(y)
         ends = set()
-        for y, xs in rows.items():
-            xs.sort()
-            for i, x in enumerate(xs):
-                if i == 0 or xs[i - 1] != x - 1:
+        for x, ys in lanes.items():
+            ys.sort()
+            for i, y in enumerate(ys):
+                if i == 0 or ys[i - 1] != y - 1:
                     ends.add((x, y))
-                if i == len(xs) - 1 or xs[i + 1] != x + 1:
+                if i == len(ys) - 1 or ys[i + 1] != y + 1:
                     ends.add((x, y))
         return ends
 
@@ -388,9 +376,9 @@ class Planner:
         return self._set_route(drone, self._next_leg(drone.position, drone.stops, drone.targets, drone.index)) or handedOver
 
     def _hand_over_skipped(self, drone):
-        """A drone about to move up gives the cells it is leaving behind to any drone that is closer to them.
+        """A drone about to start a later lane gives the cells it is leaving behind to any drone that is closer to them.
 
-        The cells below it are split into connected groups. For each group the
+        The cells in earlier lanes are split into connected groups. For each group the
         trip is the fewest steps from a drone to the group's nearest cell,
         around known obstacles, with unseen cells counted as free. So while a
         way in may still exist the owner's trip stays short and it keeps the
@@ -399,12 +387,13 @@ class Planner:
         """
         if not self.HANDOVER_WEIGHT or drone.stops or drone.inTransit or drone.makingWay:
             return False
-        below = {cell for cell in drone.targets if cell[1] > drone.position[1]}
+        here = self._lane(drone.index, drone.position)
+        below = {cell for cell in drone.targets if self._lane(drone.index, cell) < here}
         if not below:
             return False
         best = self._best_end(drone.position, drone.targets, drone.index)
-        if best is None or best[2][1] >= drone.position[1]:
-            return False  # not moving up yet
+        if best is None or self._lane(drone.index, best[2]) <= here:
+            return False  # not moving on to a later lane yet
         never = float("inf")
         ownSteps = self._steps_through_seen(drone.position, never, seenOnly=False)
         others = [(d, self._steps_through_seen(d.position, never, seenOnly=False))
@@ -583,41 +572,43 @@ class Planner:
                 return
 
     def _shift_boundary(self, left, right, loads):
-        """If one of two neighbouring drones has more left to do, the other takes cells from the edge of its column.
+        """If one of two neighbouring drones has more left to do, the other takes cells from the nearest lane of its strip.
 
-        The candidates are the heavier drone's cell nearest the lighter drone in
-        every row above both of them, where that cell touches the lighter
-        drone's cells. Half the difference in work is moved, which leaves the
-        two with the same amount. Cells come first from the rows where the
-        boundary has moved least from the original split (rows where it moved
-        the other way count as least of all). Among equally shifted rows,
-        new cells are taken from the row furthest up the field, and cells
-        being given back come from the row furthest down. So the rows that
-        are shifted stay together as one block at the top, and the boundary
-        stays as straight and as close to the original columns as the loads allow.
+        Cells only move where the two drones' unflown cells meet: the heavier
+        drone's lane nearest the lighter one must be next to, or shared with,
+        a lane the lighter drone still has cells in. Half the difference in
+        work is moved, which leaves the two with the same amount. The cells
+        come from one end of that lane as one unbroken piece: next to the
+        lighter drone's own piece of the lane if it has one, otherwise from
+        the end further from the heavier drone. So a lane is only ever split
+        into one part for each drone, and neither has to turn more than once
+        to fly its part.
         """
         heavy, light = (left, right) if loads[left] >= loads[right] else (right, left)
         gap = loads[heavy] - loads[light]
         if gap <= self.REBALANCE_GAP:
             return
         towards = 1 if light is right else -1
-        top = min(left.position[1], right.position[1]) - 1  # leave the rows the drones are working on alone
-        rows = collections.defaultdict(list)
+        lanes = collections.defaultdict(list)
         for x, y in heavy.targets:
-            if y < top:
-                rows[y].append(x)
-        original = self.boundaries[left.index]  # x of the right-hand drone's first cell when the field was first split
-        strip = []
-        for y, xs in rows.items():
-            x = max(xs) if towards == 1 else min(xs)
-            beside = (x + towards, y)
-            if self.grid.in_bounds(*beside) and self.grid.cells[y][beside[0]].droneAllocationIndex == light.index:
-                shifted = original - beside[0] if towards == 1 else beside[0] + 1 - original  # cells the lighter drone already holds past the original line
-                strip.append((shifted, y if shifted >= 0 else -y, x, y))  # giving back: lowest row of the block first
-        strip.sort()  # least shifted first, then furthest up the field
-        strip = [(x, y) for _, _, x, y in strip[:int(gap // 2)]]  # each cell moved closes the gap by two
-        if strip:
-            self._transfer(strip, heavy, light)
+            lanes[x].append(y)
+        if not lanes:
+            return
+        edge = max(lanes) if towards == 1 else min(lanes)  # the heavier drone's lane nearest the lighter drone
+        lightLanes = {x for x, _ in light.targets}
+        if edge not in lightLanes and edge + towards not in lightLanes:
+            return  # their unflown cells do not meet
+        ys = sorted(lanes[edge])  # from the far end of the field towards the drones' start
+        lightYs = [y for x, y in light.targets if x == edge]
+        if lightYs:
+            if min(lightYs) > ys[-1]:
+                ys.reverse()  # the lighter drone holds the near part of this lane: grow that part
+        elif heavy.position[0] == edge and heavy.position[1] < (ys[0] + ys[-1]) / 2:
+            ys.reverse()  # the heavier drone is flying this lane from the far end: give away the near end
+        ahead = {heavy.position} | set(heavy.route[:1])
+        piece = [(edge, y) for y in ys[:int(gap // 2)] if (edge, y) not in ahead]  # each cell moved closes the gap by two
+        if piece:
+            self._transfer(piece, heavy, light)
 
     def _take_cells(self, drone):
         """Applies the three cases to every other drone's cell on this drone's detour."""
